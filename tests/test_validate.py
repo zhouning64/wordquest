@@ -570,6 +570,27 @@ def test_q2_cue_may_end_with_period():
     assert only(variant("spell_it", prompt="Mom stays ___ by using coupons. (Means: careful with money).")) is None
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Maya gave a ___ look to her friend. (it means feeling cross and in a bad mood)",
+        "Nina was ___ and saved half of her birthday money. (means: careful with money)",
+        "Nina was ___ and saved half of her birthday money (careful with money).",
+        "Nina was ___ and saved half of her birthday money. ( spends with care ) ",
+    ],
+)
+def test_q2_fill_blank_must_not_end_with_a_parenthetical_cue(prompt):
+    # fix round 2: the sentence's situation must make the word fit; a closing definition gives it away
+    assert only(variant("fill_blank", prompt=prompt)) == "Q2: fill_blank prompt ends with a parenthetical cue"
+
+
+def test_q2_parenthetical_cue_rule_spares_mid_sentence_brackets_spell_it_and_legacy():
+    assert only(variant("fill_blank", prompt="Nina (the oldest) was ___ and saved half of her money.")) is None
+    assert only(GOOD["spell_it"]) is None
+    cued = variant("fill_blank", prompt="Nina was ___ and saved half of her birthday money. (careful with money)")
+    assert only(cued, legacy=True) is None
+
+
 # --- Q3 ----------------------------------------------------------------------------------------------
 
 def test_q3_spell_it_needs_accepted_answers_that_match_the_word():
@@ -1075,8 +1096,8 @@ def test_q5_near_copy_of_a_learn_card_sentence_is_rejected(q):
         variant("meaning", choices=["spends money carefully and does not waste food or cash", "very angry about losing",
                                     "fast at running races", "happy to share secrets"]),
         variant("pick_word", prompt="Which word means spends money carefully and does not waste food or cash?"),
-        # round 4: the kid_def is compared by the shared-name rule only, never the 60% rule (a fill_blank clue states
-        # the meaning, so overlap with the kid_def is expected); these are the reviewer's probes
+        # round 4: the kid_def is compared by the shared-name rule only, never the 60% rule (the kid_def is itself a
+        # definition, so a sentence whose situation shows the meaning overlaps it by design); the reviewer's probes
         variant("fill_blank", prompt="The ___ club spends money carefully and wastes nothing."),
         variant("fill_blank", prompt="Ben is ___ with money and does not waste things he can reuse."),
         variant("usage", choices=GOOD["usage"].choices[:3]
@@ -1115,14 +1136,28 @@ def test_q5_near_copy_skips_legacy_questions():
         "Option B never shows careful spending.",
         "Choice 3 cannot be right; frugal is about money.",
         "Not the first choice: frugal means careful with money.",
-        # round 4: the scan now stops at ",", so a second, bare ordinal ("the second") blocks the repair instead
+        # reviews of round 4: another ordinal or a negation/judgement word anywhere blocks the repair (fail-closed)
         "The first choice fits, but the second does not.",
         "Sentence 1 fits, but not the last.",
         "The first choice fits; the third one is about a bus.",
-        # fix round 1: a comma or colon right after the reference opens an inserted phrase, not a new clause
         "Sentence 2, however, does not show saving.",
         "The first sentence, about Ben, isn't right.",
         "Option C, the bus one, is not correct.",
+        "The first choice fits, but the second never does.",
+        "The first choice fits, but the second also fits.",
+        "The first choice fits; the third mentions a bus.",
+        "The first sentence is, however, not right.",
+        "Sentence 2 shows saving, and no other choice does.",
+        "Sentence 3 is incorrect for frugal.",
+        "It is false that sentence 2 fits.",
+        "The first choice is right; calling it wrong is a mistake.",
+        # fail-closed costs these, which a finer rule could repair; a lost question is better than a false one
+        "The first sentence shows saving. The others do not.",
+        "The first sentence is right because Ava does not waste food.",
+        "Sentence 2 shows frugal: Ben doesn't buy what he won't use.",
+        "The first choice fits, since Ben never wastes money.",
+        "The first sentence shows Maya saved the last of her pay.",
+        "Sentence 1 shows Ben was the first to save.",
     ],
 )
 def test_q9_more_positional_shapes_and_negated_references_are_rejected(explanation):
@@ -1135,18 +1170,6 @@ def test_q9_more_positional_shapes_and_negated_references_are_rejected(explanati
         ("Sentence 0 uses frugal to mean careful with money.", "The correct sentence uses frugal to mean careful with money."),
         ("The first definition matches careful spending.", "The correct definition matches careful spending."),
         ("Only definition 2 is about money.", "Only the correct definition is about money."),
-        ("The first sentence shows saving. The others do not.", "The correct sentence shows saving. The others do not."),
-        # round 4: a negation after "because", ":" or "," is about the scene, not the reference
-        ("The first sentence is right because Ava does not waste food.",
-         "The correct sentence is right because Ava does not waste food."),
-        ("Sentence 2 shows frugal: Ben doesn't buy what he won't use.",
-         "The correct sentence shows frugal: Ben doesn't buy what he won't use."),
-        ("The first choice fits, since Ben never wastes money.", "The correct choice fits, since Ben never wastes money."),
-        # fix round 1: an ordinal in the scene ("the last of", "the first to") is not a choice reference
-        ("The first sentence shows Maya saved the last of her pay.",
-         "The correct sentence shows Maya saved the last of her pay."),
-        ("Sentence 1 shows Ben was the first to save.", "The correct sentence shows Ben was the first to save."),
-        ("The first choice shows saving for the second time.", "The correct choice shows saving for the second time."),
     ],
 )
 def test_q9_more_positional_shapes_are_repaired(explanation, repaired):

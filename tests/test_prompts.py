@@ -265,11 +265,15 @@ def test_check_prompt_shows_only_what_the_learner_sees():
     for field in ("passes", "tempting", "chosen_index", "fill", "alternatives", "ambiguous", "reason"):
         assert field in system, field
     for rule in ("tempting = one true or false per choice, in order", "rate every choice, including your answer",
-                 "true if a learner in the stated grades who only half-knows the tested word might pick it",
-                 "the same family or tone as the right answer, or it fits most of the sentence",
-                 "false only if it clearly does not belong (a different kind of word or situation, the opposite "
-                 "tone, or nonsense)", "tempting = []"):
+                 "true if it is the same kind of word or situation as the right answer",
+                 "another feeling for a feeling word, another way of moving for a movement, another describing word "
+                 "for the same kind of thing, another person's behaviour or another situation in the same setting, "
+                 "or a sentence that uses the word in a realistic but wrong way",
+                 "false if it is a different kind of word or situation, the opposite of the right answer, a joke, "
+                 "or nonsense", "tempting = []"):
         assert rule in system, rule
+    # fix round 2: an objective same-family test; "half-knows" made the checker judge from its own knowledge
+    assert "half-knows" not in system and "might pick it" not in system
     assert "-1" in system
     for rule in ("test EACH choice on its own", "one true or false per choice, in order",
                  "a careful teacher would mark that choice right, even when another choice is better",

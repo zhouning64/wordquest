@@ -298,31 +298,19 @@ _POSITION_REF = re.compile(
     r"|\(?\b[A-D]\)|(?i:\([a-d]\))"
 )
 # A positional reference that _tidy can rewrite as "the correct sentence|choice|option|answer|definition" ("Only
-# the first sentence shows…", "Sentence 1 uses…", "only sentence C") — not one that points at a wrong choice.
+# the first sentence shows…", "Sentence 1 uses…", "only sentence C").
 _POSITION_FIXABLE = re.compile(
-    r"(?:(?i:\bthe\s+(?:first|second|third|fourth|last)\s+"
+    r"(?i:\bthe\s+(?:first|second|third|fourth|last)\s+"
     r"(?P<ordinal>sentence|choice|option|answer|definition)\b)"
-    r"|(?i:\b(?:the\s+)?(?P<numbered>sentence|choice|option|definition))\s+(?:[0-4]|[A-D])\b)"
-    r"(?!\s+(?i:is|was)\s+(?i:wrong|incorrect|not)\b)"
+    r"|(?i:\b(?:the\s+)?(?P<numbered>sentence|choice|option|definition))\s+(?:[0-4]|[A-D])\b"
 )
-# A negation in the sentence that names the choice ("The first sentence does not use…", "Not the first
-# choice…"): rewriting it as "the correct sentence" would make the explanation false, so it is left for Q9.
-_NEGATION = re.compile(r"(?i:\b(?:not|never|cannot)\b|n['’]t\b)")
-# Where the negation scan after the reference stops: the sentence end, or "because", ":" or "," (what follows is
-# about the scene, as in "The first sentence is right because Ava does not waste food."). A "," or ":" right after
-# the reference opens an inserted phrase ("Sentence 2, however, does not…"), so then only _SENTENCE_STOP ends it.
-_SCAN_STOP = re.compile(r"[.!?,:]|(?i:\bbecause\b)")
-_SENTENCE_STOP = re.compile(r"[.!?]|(?i:\bbecause\b)")
-# An ordinal used like a pronoun elsewhere in the explanation ("…, but the second does not", "not the last.") still
-# points at a choice: it is followed by "one", a verb, a conjunction, punctuation or the end. "the last of her pay",
-# "the first to save" and "the second time" are about the scene.
-_ORDINAL_PRONOUN = re.compile(
-    r"(?i:\bthe\s+(?:first|second|third|fourth|last)\b(?=\s*(?:$|[^\w\s]|(?:"
-    r"ones?|and|or|but|is|was|are|were|does|did|do|has|have|had|can|could|would|will|won|should|may|might|must|"
-    r"cannot|shows?|uses?|means?|fits?|says?|describes?|match(?:es)?|gives?|tells?|talks?|names?|needs?|puts?|"
-    r"makes?|misuses?)(?:n['’]t)?\b)))"
+# Fail-closed repair: any other ordinal, negation or judgement word anywhere in the explanation ("…, but the second
+# never does", "The first sentence is, however, not right") might make the rewrite false, so Q9 rejects it instead.
+_REPAIR_BLOCKER = re.compile(
+    r"(?i:\b(?:first|second|third|fourth|last|not|never|no|cannot|wrong|incorrect|false)\b|n['’]t\b)"
 )
-_LEADING_NOT = re.compile(r"\s*Not\b")
+# A fill_blank prompt that ends with a parenthetical: a definition or cue that gives the answer away (Q2).
+_PAREN_AT_END = re.compile(r"\([^()]*\)\s*[.!?]?\s*$")
 # A spell_it prompt ending in a parenthetical cue without the "means:" label ("(makes trouble smaller)").
 _BARE_CUE = re.compile(r"\((?!\s*means\s*:)\s*(?P<body>[^()_]*[^\s()_])\s*\)\s*\.?\s*$", re.IGNORECASE)
 # inflect.tokenize's token pattern with the case kept (typographic apostrophes and hyphens included).
@@ -358,28 +346,14 @@ def _the_correct(m: re.Match[str]) -> str:
     return f"{article} correct {(m.group('ordinal') or m.group('numbered')).lower()}"
 
 
-def _negated(text: str, start: int, end: int) -> bool:
-    """True if text starts with "Not" or the sentence holding text[start:end] has a negation before the next
-    "because", ":" or "," (or the sentence end); a "," or ":" right after the reference does not end the scan."""
-    if _LEADING_NOT.match(text):
-        return True
-    begin = max(text.rfind(mark, 0, start) for mark in ".!?") + 1
-    stop = _SCAN_STOP.search(text, end)
-    if stop and stop.group() in ",:" and not text[end : stop.start()].strip():
-        stop = _SENTENCE_STOP.search(text, stop.end())
-    return bool(_NEGATION.search(text[begin : stop.start() if stop else len(text)]))
-
-
 def _repair_position(explanation: str) -> str:
-    """Rewrite an explanation's one reference to a choice by position as "the correct sentence" (etc.). Left
-    unchanged, for Q9 to reject, when there are several references (an ordinal used like a pronoun, "the second
-    does not", counts), it points at a wrong choice, it is negated, or the result would be too long."""
+    """Rewrite an explanation's one reference to a choice by position as "the correct sentence" (etc.), fail-closed:
+    only when it is the only positional reference and the rest of the explanation has no other ordinal and no
+    negation or judgement word (_REPAIR_BLOCKER), and the result fits the limit. Otherwise it is left for Q9."""
     if sum(1 for _ in _POSITION_REF.finditer(explanation)) != 1:
         return explanation
     m = _POSITION_FIXABLE.search(explanation)
-    if m is None or _negated(explanation, m.start(), m.end()):
-        return explanation
-    if _ORDINAL_PRONOUN.search(explanation[: m.start()] + " " + explanation[m.end() :]):
+    if m is None or _REPAIR_BLOCKER.search(explanation[: m.start()] + " " + explanation[m.end() :]):
         return explanation
     fixed = explanation[: m.start()] + _the_correct(m) + explanation[m.end() :]
     return fixed if len(fixed) <= EXPLANATION_MAX else explanation
@@ -443,8 +417,10 @@ def _misspells_word(text: str, forms: set[str]) -> bool:
 
 
 # Q5 near-copies: a prompt or sentence choice that shares with a Learn-card sentence (or the kid_def) a first name
-# and 3+ other content words, or 60%+ of its own content words (when it has at least 4; Learn-card sentences only,
-# since a fill_blank clue states the meaning, so overlap with the kid_def is expected).
+# and 3+ other content words, or 60%+ of its own content words (when it has at least 4; Learn-card sentences only:
+# the kid_def is itself a definition, so text that describes the meaning, such as a sentence whose situation shows
+# it, a scenario or a meaning prompt, overlaps it by design; meaning choices and pick_word definitions are never
+# compared at all).
 _NEAR_COPY_NAME_WORDS = 3
 _NEAR_COPY_PERCENT = 60
 _NEAR_COPY_MIN_WORDS = 4
@@ -543,6 +519,8 @@ def _problem(q: RawQuestion, ctx: _Ctx) -> str | None:
             return "Q2: prompt contains the word outside the blank"
         if q.type == "spell_it" and not _CUE_AT_END.search(q.prompt):
             return 'Q2: spell_it prompt must end with a "(means: ...)" cue'
+        if q.type == "fill_blank" and not ctx.legacy and _PAREN_AT_END.search(q.prompt):
+            return "Q2: fill_blank prompt ends with a parenthetical cue"
 
     # Q3 typed answers
     if q.type == "spell_it":
