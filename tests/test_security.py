@@ -67,3 +67,63 @@ def test_jsonl_log_appends_to_existing_file(tmp_path: Path) -> None:
     JsonlLog(path).write({"n": 1})
     JsonlLog(path).write({"n": 2})
     assert [json.loads(line)["n"] for line in path.read_text(encoding="utf-8").splitlines()] == [1, 2]
+
+
+def _read_lines(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def test_jsonl_log_redacts_secret_containing_quote_and_backslash(tmp_path: Path) -> None:
+    secret = 'pa"ss\\word1'
+    register_secrets([secret])
+    path = tmp_path / "log.jsonl"
+    JsonlLog(path).write({"error": f"bad code {secret}", "other": 1})
+    raw = path.read_text(encoding="utf-8")
+    assert secret not in raw
+    assert json.dumps(secret)[1:-1] not in raw  # nor its JSON-escaped form
+    assert json.loads(_read_lines(path)[0]) == {"error": f"bad code {REDACTED}", "other": 1}
+
+
+def test_jsonl_log_numeric_secret_does_not_corrupt_numbers(tmp_path: Path) -> None:
+    register_secrets(["1234"])
+    path = tmp_path / "log.jsonl"
+    JsonlLog(path).write({"tokens": 1234, "ratio": 0.5, "ok": True, "none": None, "note": "code 1234 used"})
+    assert json.loads(_read_lines(path)[0]) == {
+        "tokens": 1234,
+        "ratio": 0.5,
+        "ok": True,
+        "none": None,
+        "note": f"code {REDACTED} used",
+    }
+
+
+def test_jsonl_log_redacts_nested_dicts_lists_tuples_and_keys(tmp_path: Path) -> None:
+    register_secrets(["csk-sentinel-9f8e7d"])
+    path = tmp_path / "log.jsonl"
+    JsonlLog(path).write(
+        {
+            "outer": {"inner": ["a csk-sentinel-9f8e7d b", {"deep": "csk-sentinel-9f8e7d"}, 7]},
+            "pair": ("x", "csk-sentinel-9f8e7d"),
+            "csk-sentinel-9f8e7d": "keyed",
+        }
+    )
+    raw = path.read_text(encoding="utf-8")
+    assert "csk-sentinel-9f8e7d" not in raw
+    assert json.loads(_read_lines(path)[0]) == {
+        "outer": {"inner": [f"a {REDACTED} b", {"deep": REDACTED}, 7]},
+        "pair": ["x", REDACTED],
+        REDACTED: "keyed",
+    }
+
+
+def test_jsonl_log_redacts_non_json_objects_via_str(tmp_path: Path) -> None:
+    class Carrier:
+        def __str__(self) -> str:
+            return "carrying csk-sentinel-9f8e7d"
+
+    register_secrets(["csk-sentinel-9f8e7d"])
+    path = tmp_path / "log.jsonl"
+    JsonlLog(path).write({"obj": Carrier(), "items": [Carrier()]})
+    raw = path.read_text(encoding="utf-8")
+    assert "csk-sentinel-9f8e7d" not in raw
+    assert json.loads(_read_lines(path)[0]) == {"obj": f"carrying {REDACTED}", "items": [f"carrying {REDACTED}"]}
