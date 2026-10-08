@@ -23,7 +23,7 @@ EXPECTED_REPOSITORY_METHODS = {
     "list_lists", "get_list", "save_list", "delete_list",
     "get_content", "get_contents", "save_content", "list_content_by_status", "list_contents",
     "save_draft", "swap_draft", "set_image",
-    "get_pool", "get_pools", "add_questions",
+    "get_pool", "get_pools", "add_questions", "delete_questions",
     "get_progress", "list_progress",
     "save_session", "get_session", "list_sessions",
     "apply_events", "list_events",
@@ -516,3 +516,22 @@ def test_add_questions_is_idempotent_per_question_id(repo):
     repo.add_questions("6-8", "brave", 1, [q])
     repo.add_questions("6-8", "brave", 1, [q])
     assert ids(repo.get_pool("6-8", "brave")) == ["q1"]
+
+
+def test_delete_questions_removes_only_that_version_of_that_word(repo):
+    repo.save_content(make_content("6-8", "brave", version=1))
+    repo.save_content(make_content("6-8", "calm", version=1))
+    repo.save_content(make_content("3-5", "brave", version=1))
+    repo.add_questions("6-8", "brave", 1, [make_question("b1", "6-8", "brave", 1)])
+    repo.add_questions("6-8", "brave", 2, [make_question("b2", "6-8", "brave", 2),
+                                           make_question("b3", "6-8", "brave", 2, T2)])
+    repo.add_questions("6-8", "calm", 2, [make_question("c2", "6-8", "calm", 2)])
+    repo.add_questions("3-5", "brave", 2, [make_question("k2", "3-5", "brave", 2)])
+
+    assert repo.delete_questions("6-8", "brave", 2) == 2  # the count of removed rows
+    assert repo.get_pool("6-8", "brave", 2) == []
+    assert ids(repo.get_pool("6-8", "brave", 1)) == ["b1"]  # other versions of the word stay
+    assert ids(repo.get_pool("6-8", "calm", 2)) == ["c2"]   # other words stay
+    assert ids(repo.get_pool("3-5", "brave", 2)) == ["k2"]  # the same word in another band stays
+    assert repo.delete_questions("6-8", "brave", 2) == 0    # nothing left to delete
+    assert repo.delete_questions("6-8", "ghost", 2) == 0

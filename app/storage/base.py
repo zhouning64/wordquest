@@ -108,6 +108,10 @@ class Repository(ABC):
     def add_questions(self, band: str, word: str, version: int, qs: list[Question]) -> None:
         """Store questions (ValueError if a question's band/word/content_version differ from the arguments)."""
 
+    @abstractmethod
+    def delete_questions(self, band: str, word: str, version: int) -> int:
+        """Delete every question of this word × band at exactly this content_version. Returns how many were deleted."""
+
     # ---- progress -------------------------------------------------------------------------
     @abstractmethod
     def get_progress(self, profile_id: str, words: list[str]) -> dict[str, WordProgress]:

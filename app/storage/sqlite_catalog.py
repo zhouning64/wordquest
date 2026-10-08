@@ -198,3 +198,11 @@ class CatalogMixin:
         with self._tx() as conn:
             for q in qs:
                 self._put_question(conn, q)
+
+    def delete_questions(self, band: str, word: str, version: int) -> int:
+        with self._tx() as conn:
+            cur = conn.execute(
+                "DELETE FROM questions WHERE band = ? AND word = ? AND version = ?",
+                (band, word, version),
+            )
+            return cur.rowcount

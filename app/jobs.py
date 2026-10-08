@@ -20,10 +20,11 @@ from app.models import POOL_CAP, Job, Question, WordContent
 from app.security import redact
 from app.storage.base import BlobStore, Repository
 
-LEASE_S = 300
+LEASE_S = 900  # longer than a worst-case questions job (about 366 s), so no other loop re-claims a live job
 BACKOFF_S = (5, 30)  # attempt 1 fails → +5 s, attempt 2 fails → +30 s, attempt 3 fails → final
 MAX_ATTEMPTS = len(BACKOFF_S) + 1
 RATE_LIMIT_DEFAULT_S = 60
+RATE_LIMIT_MAX_S = 3600  # a Retry-After hint is capped at one hour (huge hints would overflow the date maths)
 NO_GENERATOR_DEFER_S = 3600
 IDLE_S = 1.0
 TOPUP_MAX = 6
@@ -311,6 +312,9 @@ class Worker:
             content.error = message
             self.repo.save_content(content)
         else:  # draft: the current version keeps serving
+            # Delete the failed draft's questions before the draft is cleared: the next regeneration reuses this
+            # same version number, and any verified question left here would be served under its new card.
+            self.repo.delete_questions(job.band, job.word, job.target_version)
             content.error = f"Regeneration failed: {message}"
             content.draft = None
             content.draft_version = None
@@ -329,7 +333,8 @@ class Worker:
         now = self.now_fn()
         if getattr(exc, "daily", False):
             return clock.iso(next_utc_midnight(now))
-        delay = getattr(exc, "retry_after", None) or RATE_LIMIT_DEFAULT_S
+        hint = getattr(exc, "retry_after", None)  # 0 means "retry now"; a missing hint means the default wait
+        delay = RATE_LIMIT_DEFAULT_S if hint is None else min(float(hint), RATE_LIMIT_MAX_S)
         return clock.add_seconds_iso(now, float(delay))
 
     def _model_name(self) -> str:

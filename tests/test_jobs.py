@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app import clock
 from app.ai.content import ContentGenerator
 from app.ai.images.base import ImageProvider
 from app.ai.images.process import image_key
@@ -174,6 +175,24 @@ async def test_rate_limits_defer_without_consuming_an_attempt(repo, clk, tmp_pat
     assert repo.get_content(BAND, WORD).status == "pending"
 
 
+@pytest.mark.parametrize("retry_after, until", [
+    (1e18, "2026-10-07T13:00:00Z"),  # used to raise OverflowError and leave the job running
+    (3e11, "2026-10-07T13:00:00Z"),  # used to raise "date value out of range", same result
+    (1e9, "2026-10-07T13:00:00Z"),   # used to defer the job to 2058
+    (0, "2026-10-07T12:00:00Z"),     # Retry-After: 0 means retry now, not the 60 s default
+], ids=["huge", "out-of-range-date", "decades", "zero"])
+async def test_retry_after_is_capped_at_one_hour_and_zero_means_retry_now(repo, clk, tmp_path, retry_after, until):
+    error = RateLimited("429 slow down", retry_after=retry_after)
+    worker = make_worker(repo, clk, tmp_path, llm=FakeLLM({LEARN_CARD: [error]}))
+    ensure_generation(repo, BAND, WORD)
+
+    assert await worker.run_one()  # no exception escapes the worker
+
+    job = repo.get_job(LEARN_KEY)
+    assert (job.status, job.attempts, job.not_before) == ("pending", 0, until)
+    assert repo.get_content(BAND, WORD).status == "pending"
+
+
 async def test_daily_call_limit_defers_ai_jobs_until_next_utc_midnight(repo, clk, tmp_path):
     llm = FakeLLM({})
     worker = make_worker(repo, clk, tmp_path, llm=llm, limit=2)
@@ -334,6 +353,43 @@ async def test_failed_regeneration_leaves_the_current_version_serving(repo, clk,
     assert repo.get_job(LEARN_KEY).status == "failed"
 
 
+async def test_failed_regeneration_questions_are_not_reused_by_the_next_regeneration(repo, clk, tmp_path):
+    save_ready_content(repo)  # v1: the served card + 6 questions
+    card_a = make_card(short_def="card A: careful with money")
+    card_b = make_card(short_def="card B: never wastes anything")
+    partial = BATCH_A[:3]  # 3 verified questions for card A; the attempts after them fail
+    invalid_batch = {"items": []}  # no "questions" key → InvalidOutput
+    llm = FakeLLM({
+        LEARN_CARD: [card_a.model_dump(), card_b.model_dump()],
+        QUESTION_BATCH: [batch(partial), invalid_batch, invalid_batch, batch(BATCH_B)],
+        ANSWER_CHECK: [check_all_match(card_a, partial), check_all_match(card_b, BATCH_B)],
+    })
+    worker = make_worker(repo, clk, tmp_path, llm=llm)  # no image provider
+
+    regenerate(repo, BAND, WORD, "learn")  # regeneration 1: draft v2 = card A, then questions v2
+    assert await worker.run_one()  # learn
+    assert await worker.run_one()  # questions attempt 1: 3 verified stored, then PoolShortfall
+    failed = repo.get_pool(BAND, WORD, 2)
+    assert len(failed) == 3
+    clk.advance(BACKOFF_S[0])
+    assert await worker.run_one()  # attempt 2: invalid output
+    clk.advance(BACKOFF_S[1])
+    assert await worker.run_one()  # attempt 3: final failure
+    content = repo.get_content(BAND, WORD)
+    assert (content.draft, content.draft_version, content.content_version) == (None, None, 1)
+    assert content.error.startswith("Regeneration failed: InvalidOutput")
+    assert repo.get_pool(BAND, WORD, 2) == []  # the failed draft's questions go with it
+
+    regenerate(repo, BAND, WORD, "learn")  # regeneration 2 targets v2 again, now for card B
+    assert await drain(worker) == 2  # learn → questions → swap
+    content = repo.get_content(BAND, WORD)
+    assert (content.content_version, content.card.short_def) == (2, card_b.short_def)
+    served = repo.get_pool(BAND, WORD)
+    assert len(served) == 6
+    assert {q.prompt for q in served} == {item["prompt"] for item in BATCH_B}
+    assert not {q.id for q in failed} & {q.id for q in served}
+
+
 async def test_stale_job_is_discarded_without_calling_the_model(repo, clk, tmp_path):
     llm = FakeLLM({})
     worker = make_worker(repo, clk, tmp_path, llm=llm)
@@ -427,6 +483,12 @@ async def test_expired_lease_is_reclaimed(repo, clk, tmp_path):
     assert (questions.status, questions.target_version, questions.chain) == ("pending", 1, ["image"])
 
 
+def test_job_lease_outlasts_a_worst_case_questions_job():
+    # Two model calls x three tries x a 60 s timeout, plus the backoff sleeps, is about 366 s. A 300 s lease let
+    # another loop re-claim a job that was still running.
+    assert LEASE_S == 900
+
+
 @pytest.mark.parametrize("used_attempts", [0, MAX_ATTEMPTS - 1], ids=["retry-attempt", "final-attempt"])
 async def test_worker_whose_lease_was_reclaimed_cannot_finish_or_fail_the_job(repo, clk, tmp_path, used_attempts):
     llm = GateLLM(BAD_CARD)  # worker A's model call will end in InvalidOutput
@@ -438,7 +500,8 @@ async def test_worker_whose_lease_was_reclaimed_cannot_finish_or_fail_the_job(re
     first = asyncio.create_task(worker.run_one())  # worker A claims, then blocks inside the model call
     await asyncio.wait_for(llm.started.wait(), timeout=2)
     a_token = repo.get_job(LEARN_KEY).lease_token
-    reclaimed = repo.claim_next_job("2026-10-07T12:05:01Z", LEASE_S)  # A's lease expired; worker B takes over
+    expired = clock.iso(NOW + timedelta(seconds=LEASE_S + 1))  # A claimed at NOW, so its lease ends at NOW + LEASE_S
+    reclaimed = repo.claim_next_job(expired, LEASE_S)  # A's lease expired; worker B takes over
     assert reclaimed.key == LEARN_KEY and reclaimed.lease_token != a_token
 
     llm.release.set()
