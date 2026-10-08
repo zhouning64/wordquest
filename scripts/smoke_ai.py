@@ -8,7 +8,8 @@ Run from the repo root (reads CEREBRAS_* settings from .env):
 For each word it makes one Learn card and one initial question batch (with the blind answer-key check),
 then prints the card, the questions that survived validation and checking, and the token usage.
 Nothing is written to the database. Usage and rejection logs go to DATA_DIR/logs/ like the real worker.
-Exit codes: 0 = every word succeeded, 1 = no CEREBRAS_API_KEY, 2 = at least one word failed.
+Exit codes: 0 = every word succeeded, 1 = no CEREBRAS_API_KEY, 2 = at least one word failed
+(including a word whose verified questions fall below the minimum pool the real worker needs).
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.ai.content import ContentGenerator, initial_mix  # noqa: E402
+from app.ai.content import MIN_POOL, MIN_TIER1, MIN_TIER2, ContentGenerator, initial_mix, pool_meets_minimum  # noqa: E402
 from app.ai.llm import CerebrasClient, LLMError, LLMResult  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.logs import JsonlLog  # noqa: E402
@@ -128,8 +129,24 @@ def format_usage(calls: list[dict], words: int) -> str:
     return "\n".join(lines)
 
 
+def pool_shortfall(questions: list[Question]) -> str:
+    """Empty string when the verified questions meet the minimum pool the real worker requires, else the reason."""
+    if pool_meets_minimum(questions):
+        return ""
+    verified = [q for q in questions if q.verified]
+    tier1 = sum(1 for q in verified if q.tier == 1)
+    tier2 = sum(1 for q in verified if q.tier == 2)
+    return (
+        f"only {len(verified)} verified questions (need {MIN_POOL} incl. {MIN_TIER1} tier-1 and {MIN_TIER2} tier-2); "
+        f"got {tier1} tier-1 and {tier2} tier-2"
+    )
+
+
 async def run_words(generator: Any, words: list[str], band: str, out: TextIO | None = None) -> list[dict]:
-    """Generate a card and an initial question batch per word; print them; never stop at a failed word."""
+    """Generate a card and an initial question batch per word; print them; never stop at a failed word.
+
+    A word whose verified questions fall below the worker's minimum pool counts as failed (the real worker
+    would fail it with PoolShortfall), after its card and the questions that were kept are printed."""
     out = out or sys.stdout
     results: list[dict] = []
     for word in words:
@@ -142,15 +159,22 @@ async def run_words(generator: Any, words: list[str], band: str, out: TextIO | N
             print(f"\n=== {word} ({band}) FAILED: {type(exc).__name__}: {error}", file=out)
             results.append({"word": word, "ok": False, "questions": 0, "error": error})
             continue
+        verified = [q for q in questions if q.verified]
         print(format_card(word, band, card), file=out)
         print(f"requested mix: {json.dumps(mix)}", file=out)
-        print(format_questions(questions), file=out)
-        results.append({"word": word, "ok": True, "questions": len(questions), "error": ""})
+        print(format_questions(verified), file=out)
+        shortfall = pool_shortfall(verified)
+        if shortfall:
+            print(f"\n=== {word} ({band}) FAILED: PoolShortfall: {shortfall}", file=out)
+            results.append({"word": word, "ok": False, "questions": len(verified), "error": shortfall})
+            continue
+        results.append({"word": word, "ok": True, "questions": len(verified), "error": ""})
     return results
 
 
 async def _amain(settings: Settings, words: list[str], band: str, out: TextIO) -> int:
     logs = settings.data_dir / "logs"
+    rejections = logs / "ai-rejections.jsonl"
     client = CerebrasClient(
         api_key=settings.cerebras_api_key,
         model=settings.cerebras_model,
@@ -162,7 +186,7 @@ async def _amain(settings: Settings, words: list[str], band: str, out: TextIO) -
     generator = ContentGenerator(
         recorder,
         model_name=client.model,
-        rejection_log=JsonlLog(logs / "ai-rejections.jsonl"),
+        rejection_log=JsonlLog(rejections),
         usage_log=JsonlLog(logs / "ai-usage.jsonl"),
     )
     print(f"Model {client.model} · band {band} · words: {', '.join(words)}", file=out)
@@ -173,7 +197,7 @@ async def _amain(settings: Settings, words: list[str], band: str, out: TextIO) -
     print(format_usage(recorder.calls, len(words)), file=out)
     failed = [r["word"] for r in results if not r["ok"]]
     if failed:
-        print(f"\nFAILED: {', '.join(failed)} — see data/logs/ai-rejections.jsonl for the raw model output.", file=out)
+        print(f"\nFAILED: {', '.join(failed)} — see {rejections} for the raw model output.", file=out)
         return 2
     print("\nOK: every word produced a card and verified questions.", file=out)
     return 0
@@ -186,6 +210,7 @@ def main(argv: list[str] | None = None, out: TextIO | None = None) -> int:
     args = parser.parse_args(argv)
     out = out or sys.stdout
     settings = Settings()
+    settings.cerebras_api_key = settings.cerebras_api_key.strip()  # a blank or padded key must not reach the API as a 401
     if not settings.cerebras_api_key:
         print(NO_KEY_MESSAGE, file=sys.stderr)
         return 1

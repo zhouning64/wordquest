@@ -22,7 +22,8 @@ how well each word is known.
 - macOS (Linux works the same way) with **Python 3.10 or newer**. Check with `python3 --version`. If it prints 3.9
   or older, install a newer Python (python.org installer, or `brew install python@3.12`) and use that interpreter
   (for example `python3.12`) in the commands below.
-- **Node.js 18 or newer** — only needed to run the JavaScript tests.
+- **Node.js 21 or newer** (the tests were run on Node 24) — only needed to run the JavaScript tests. The test command
+  below passes a quoted `"tests/js/*.test.mjs"` pattern that Node itself expands, which older versions do not do.
 - A **Cerebras API key** for generating new words (see [Adding the Cerebras key](#adding-the-cerebras-key)).
 - Optional: a **z.ai API key** for pictures (see [Pictures (z.ai)](#pictures-zai)); without one, Learn pages show
   emoji scenes.
@@ -61,8 +62,8 @@ passcode, add a profile, and assign it a word list.
    SITE_ACCESS_CODE=pick-a-family-code
    ```
 
-   Without an access code anyone on your Wi-Fi could open the app; the server prints a warning if you start it on
-   the network without one.
+   Without an access code anyone on your Wi-Fi could open the app. The server does not warn at start-up; it logs a
+   warning in its terminal once, the first time another device reaches it while no access code is set.
 
 2. Start the server so other devices can reach it:
 
@@ -209,7 +210,8 @@ either a base64 `b64_json` answer or an image `url`.
 node --test "tests/js/*.test.mjs"       # JavaScript: spaced-repetition mirror, session engine, Parent helpers
 ```
 
-The tests never call the network; the AI and the image provider are replaced by fakes.
+The JavaScript command needs Node 21 or newer (see Requirements). The tests never call the network; the AI and the
+image provider are replaced by fakes.
 
 ## Your data and backups
 

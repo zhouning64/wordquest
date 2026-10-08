@@ -9,6 +9,7 @@ import pytest
 from app.ai.content import INITIAL_MIX
 from app.ai.llm import InvalidOutput
 from app.models import LearnCard, Question, RightUse, Sense, WrongUse, new_id
+from app.security import register_secrets
 from tests.fakes import FakeLLM
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,36 +52,70 @@ def make_question(qtype: str, tier: int, **fields) -> Question:
     return Question(**data)
 
 
+FAIL_MESSAGE = "learn card rejected: L2 fewer than 4 examples"
+
+
+def first_two_questions() -> list[Question]:
+    return [
+        make_question(
+            "meaning",
+            1,
+            prompt="What does tenacious mean?",
+            choices=["very sleepy", "not giving up", "easily scared", "quite small"],
+            answer_index=1,
+            explanation="Tenacious means you keep going.",
+        ),
+        make_question(
+            "spell_it",
+            3,
+            prompt="The ___ goalie never quit. (means: not giving up)",
+            answer_index=-1,
+            accepted_answers=["tenacious"],
+            explanation="Spelled t-e-n-a-c-i-o-u-s.",
+        ),
+    ]
+
+
+def choice_question(qtype: str, tier: int, prompt: str, **fields) -> Question:
+    return make_question(
+        qtype,
+        tier,
+        prompt=prompt,
+        choices=["tenacious", "very sleepy", "easily scared", "quite small"],
+        answer_index=0,
+        explanation="Tenacious means you keep going.",
+        **fields,
+    )
+
+
+def full_pool() -> list[Question]:
+    """The two questions above plus four more: 6 verified, 3 tier-1, 2 tier-2 (meets the worker's minimum)."""
+    return first_two_questions() + [
+        choice_question("pick_word", 1, 'Which word means "not giving up"?'),
+        choice_question("fill_blank", 1, "The ___ goalie blocked every shot."),
+        choice_question("synonym", 2, 'Which word is closest in meaning to "persistent"?'),
+        choice_question("usage", 2, "Which sentence uses tenacious correctly?"),
+    ]
+
+
 class StubGenerator:
-    def __init__(self, fail_words: set[str]) -> None:
+    """Stands in for ContentGenerator. `pools` maps a word to the questions make_questions returns for it;
+    any other word gets the full pool."""
+
+    def __init__(self, fail_words: set[str], pools: dict[str, list[Question]] | None = None, fail_message: str = FAIL_MESSAGE) -> None:
         self.fail_words = fail_words
+        self.pools = pools or {}
+        self.fail_message = fail_message
         self.question_calls: list[tuple] = []
 
     async def make_card(self, word: str, band: str) -> LearnCard:
         if word in self.fail_words:
-            raise InvalidOutput("learn card rejected: L2 fewer than 4 examples")
+            raise InvalidOutput(self.fail_message)
         return make_card()
 
     async def make_questions(self, word, band, card, mix, existing, version):
         self.question_calls.append((word, band, dict(mix), list(existing), version))
-        return [
-            make_question(
-                "meaning",
-                1,
-                prompt="What does tenacious mean?",
-                choices=["very sleepy", "not giving up", "easily scared", "quite small"],
-                answer_index=1,
-                explanation="Tenacious means you keep going.",
-            ),
-            make_question(
-                "spell_it",
-                3,
-                prompt="The ___ goalie never quit. (means: not giving up)",
-                answer_index=-1,
-                accepted_answers=["tenacious"],
-                explanation="Spelled t-e-n-a-c-i-o-u-s.",
-            ),
-        ]
+        return list(self.pools[word]) if word in self.pools else full_pool()
 
 
 def test_main_without_key_exits_1_with_a_clear_message(tmp_path, monkeypatch, capsys):
@@ -132,14 +167,14 @@ async def test_run_words_prints_cards_and_questions_and_continues_after_a_failur
     text = out.getvalue()
     assert "=== tenacious (6-8) — adjective ===" in text
     assert "short_def:   holding on firmly; not giving up" in text
-    assert "questions kept (verified): 2" in text
+    assert "questions kept (verified): 6" in text
     assert "[meaning t1] What does tenacious mean?" in text
     assert "B) not giving up  ✓" in text
     assert "A) very sleepy\n" in text
     assert "accepted: tenacious" in text
     assert "=== in lieu of (6-8) FAILED: InvalidOutput: learn card rejected: L2 fewer than 4 examples" in text
     assert results == [
-        {"word": "tenacious", "ok": True, "questions": 2, "error": ""},
+        {"word": "tenacious", "ok": True, "questions": 6, "error": ""},
         {"word": "in lieu of", "ok": False, "questions": 0, "error": "learn card rejected: L2 fewer than 4 examples"},
     ]
     # the initial batch is requested with the spec §7.3 mix, no existing pool, version 1
@@ -158,3 +193,103 @@ def test_format_card_marks_empty_optional_fields():
     assert "right_use:   (none)" in text
     assert "wrong_use:   (none)" in text
     assert "(why:" not in text
+
+
+NEED = "need 6 incl. 2 tier-1 and 1 tier-2"
+
+
+async def test_run_words_fails_a_word_below_the_minimum_pool_like_the_worker_does():
+    smoke = load_smoke()
+    unchecked = [q.model_copy(update={"verified": False}) for q in full_pool()]
+    only_tier1 = [choice_question("pick_word", 1, f"Which word is number {i}?") for i in range(6)]
+    stub = StubGenerator(
+        fail_words=set(),
+        pools={"few": first_two_questions(), "empty": [], "unchecked": unchecked, "no tier 2": only_tier1},
+    )
+    out = io.StringIO()
+    results = await smoke.run_words(stub, ["tenacious", "few", "empty", "unchecked", "no tier 2"], "6-8", out)
+    text = out.getvalue()
+    assert results == [
+        {"word": "tenacious", "ok": True, "questions": 6, "error": ""},
+        {"word": "few", "ok": False, "questions": 2, "error": f"only 2 verified questions ({NEED}); got 1 tier-1 and 0 tier-2"},
+        {"word": "empty", "ok": False, "questions": 0, "error": f"only 0 verified questions ({NEED}); got 0 tier-1 and 0 tier-2"},
+        {"word": "unchecked", "ok": False, "questions": 0, "error": f"only 0 verified questions ({NEED}); got 0 tier-1 and 0 tier-2"},
+        {"word": "no tier 2", "ok": False, "questions": 6, "error": f"only 6 verified questions ({NEED}); got 6 tier-1 and 0 tier-2"},
+    ]
+    assert f"=== few (6-8) FAILED: PoolShortfall: only 2 verified questions ({NEED}); got 1 tier-1 and 0 tier-2" in text
+    assert f"=== empty (6-8) FAILED: PoolShortfall: only 0 verified questions ({NEED})" in text
+    assert "=== tenacious (6-8) FAILED" not in text
+    # the card and the questions that were kept are still printed for a short word, to help diagnose it
+    assert "=== few (6-8) — adjective ===" in text
+    assert len(stub.question_calls) == 5  # a short word never stops the run
+
+
+async def test_run_words_redacts_a_registered_secret_in_the_failed_line():
+    smoke = load_smoke()
+    register_secrets(["csk-sentinel-5f3a9c"])
+    stub = StubGenerator(fail_words={"tenacious"}, fail_message="HTTP 401 for key csk-sentinel-5f3a9c")
+    out = io.StringIO()
+    results = await smoke.run_words(stub, ["tenacious"], "6-8", out)
+    text = out.getvalue()
+    assert "csk-sentinel-5f3a9c" not in text
+    assert "=== tenacious (6-8) FAILED: InvalidOutput: HTTP 401 for key [REDACTED]" in text
+    assert results == [{"word": "tenacious", "ok": False, "questions": 0, "error": "HTTP 401 for key [REDACTED]"}]
+
+
+class FakeClient:
+    """Replaces CerebrasClient in main() tests: never touches the network."""
+
+    created: list[dict] = []
+    model = "fake-model"
+
+    def __init__(self, **kwargs) -> None:
+        FakeClient.created.append(kwargs)
+
+    async def aclose(self) -> None:
+        pass
+
+
+def run_main(smoke, monkeypatch, tmp_path, stub, argv, key="csk-test-key-1234"):
+    FakeClient.created = []
+    monkeypatch.chdir(tmp_path)  # no .env here
+    monkeypatch.setenv("CEREBRAS_API_KEY", key)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "wq-store"))
+    monkeypatch.setattr(smoke, "CerebrasClient", FakeClient)
+    monkeypatch.setattr(smoke, "ContentGenerator", lambda *args, **kwargs: stub)
+    out = io.StringIO()
+    return smoke.main(argv, out), out.getvalue()
+
+
+def test_main_exits_0_when_every_word_has_a_full_pool(tmp_path, monkeypatch):
+    smoke = load_smoke()
+    code, text = run_main(smoke, monkeypatch, tmp_path, StubGenerator(fail_words=set()), ["tenacious"])
+    assert code == 0
+    assert "OK: every word produced a card and verified questions." in text
+
+
+def test_main_exits_2_for_a_short_word_and_names_the_real_rejections_log(tmp_path, monkeypatch):
+    smoke = load_smoke()
+    stub = StubGenerator(fail_words=set(), pools={"tenacious": first_two_questions()})
+    code, text = run_main(smoke, monkeypatch, tmp_path, stub, ["tenacious"])
+    assert code == 2
+    assert "OK: every word" not in text
+    assert "FAILED: tenacious" in text
+    assert str(tmp_path / "wq-store" / "logs" / "ai-rejections.jsonl") in text  # DATA_DIR is honoured, not a fixed "data/logs"
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t \n"])
+def test_main_treats_a_blank_key_as_missing(tmp_path, monkeypatch, capsys, blank):
+    smoke = load_smoke()
+    code, text = run_main(smoke, monkeypatch, tmp_path, StubGenerator(fail_words=set()), ["tenacious"], key=blank)
+    assert code == 1
+    assert text == ""
+    assert "CEREBRAS_API_KEY is not set" in capsys.readouterr().err
+    assert FakeClient.created == []
+    assert not (tmp_path / "wq-store").exists()
+
+
+def test_main_strips_whitespace_around_the_key_before_using_it(tmp_path, monkeypatch):
+    smoke = load_smoke()
+    code, _ = run_main(smoke, monkeypatch, tmp_path, StubGenerator(fail_words=set()), ["tenacious"], key="  csk-test-key-1234 \n")
+    assert code == 0
+    assert [c["api_key"] for c in FakeClient.created] == ["csk-test-key-1234"]
