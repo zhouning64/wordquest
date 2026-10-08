@@ -27,7 +27,7 @@ Phase 1 is done when all of the following are true:
 | Content generation | Live AI via Cerebras (`gpt-oss-120b` default; configurable). Validated by code, answer-key-checked by a second blind AI pass, cached per word × grade band. |
 | Question freshness | A cached **question pool** per word × band (~12 to start), topped up in the background as learners exhaust it. |
 | Hosting | Phase 1 local (FastAPI + SQLite + local image folder). Phase 2 Google Cloud Run + Firestore + Cloud Storage via the same storage interface. |
-| Images | AI illustrations through a pluggable `ImageProvider`; emoji-scene fallback. Provider chosen at an implementation checkpoint (§16). |
+| Images | AI illustrations through a pluggable `ImageProvider`; emoji-scene fallback. **Provider: z.ai** (decided 2026-10-07) via the OpenAI-style `images/generations` adapter; the model (`glm-image` vs `cogview-4-250304`) is chosen at an implementation checkpoint (§16). |
 | Learners | Not tied to one child. "Who's learning?" profile picker, no passwords. Whole site behind one shared access code (when set). |
 | Progress | Stored on the server per profile. |
 | Word lists | Managed in a passcode-protected Parent area; content pre-generated in the background on save. |
@@ -110,8 +110,11 @@ wordquest/
 | `CEREBRAS_MODEL` | `gpt-oss-120b` | Any Cerebras model that supports strict `json_schema` output. |
 | `CEREBRAS_BASE_URL` | `https://api.cerebras.ai/v1` | |
 | `LLM_MAX_COMPLETION_TOKENS` | `16000` | Sent as `max_completion_tokens` on every call (reasoning models spend tokens before output). |
-| `IMAGE_PROVIDER` | `none` | `none` or the provider chosen at checkpoint. |
-| `IMAGE_API_KEY`, `IMAGE_MODEL` | *(empty)* | Provider-specific. |
+| `IMAGE_PROVIDER` | `none` | `none` or `openai_compatible` (any service with an OpenAI-style `POST {base}/images/generations`, including z.ai). |
+| `IMAGE_BASE_URL` | *(empty)* | For z.ai: `https://api.z.ai/api/paas/v4`. |
+| `IMAGE_API_KEY`, `IMAGE_MODEL` | *(empty)* | z.ai key; model `glm-image` or `cogview-4-250304`. |
+| `IMAGE_SIZE` | `1024x1024` | Valid for both z.ai models (glm-image: 1024–2048 px, multiples of 32; cogview-4: 512–2048, multiples of 16). |
+| `IMAGE_QUALITY` | *(empty)* | Empty = provider default; z.ai accepts `standard` (≈5–10 s) or `hd` (≈20 s). |
 | `SITE_ACCESS_CODE` | *(empty)* | Empty → no access gate (fine on `127.0.0.1`; the server logs a warning at startup if bound to a non-loopback host with no code). |
 | `PARENT_PASSCODE` | *(empty)* | Empty → Parent area disabled with an explanatory message. |
 | `SECRET_KEY` | *(auto)* | Cookie signing key. If unset in Phase 1, generated once and saved to `DATA_DIR/secret_key`. |
@@ -262,7 +265,7 @@ All calls use `response_format: {type: "json_schema", json_schema: {name, strict
 
 ### 7.4 Images
 
-`ImageProvider.generate(prompt: str) -> bytes`. Prompt = fixed style preamble ("friendly flat cartoon illustration, consistent soft palette, simple background, no text or letters, kid-safe") + `image_scene`. The result is resized to max 768 px on the long edge, encoded as WebP, stored via `BlobStore.put`, and recorded with `set_image`. `IMAGE_PROVIDER=none` skips the job and leaves `image_status = none`. On failure the Learn page shows the `emoji_scene` card; the Parent area offers "Retry picture".
+`ImageProvider.generate(prompt: str) -> bytes`. Prompt = fixed style preamble ("friendly flat cartoon illustration, consistent soft palette, simple background, no text or letters, kid-safe") + `image_scene`. Providers may answer with base64 image data or with a temporary link (z.ai links expire after 30 days); a link is downloaded immediately, **without** the `Authorization` header (the link may point at another host), and downloads over 20 MB are rejected. The result is resized to max 768 px on the long edge, encoded as WebP, stored via `BlobStore.put`, and recorded with `set_image`. `IMAGE_PROVIDER=none` skips the job and leaves `image_status = none`. On failure the Learn page shows the `emoji_scene` card; the Parent area offers "Retry picture".
 
 ### 7.5 Code-level validation (`app/ai/validate.py`)
 
@@ -489,5 +492,5 @@ When AI is configured, a parent can "Regenerate → all" any starter word to get
 
 ## 16. Open items (resolved during implementation)
 
-1. **Image provider** — at a checkpoint after the Learn page works, generate the same 5 words with 2 providers; the parent picks one. Until then `IMAGE_PROVIDER=none`.
+1. **Image model** — provider resolved: **z.ai** (2026-10-07). At a checkpoint after the Learn page works, generate the same 5 words with `glm-image` (≈$0.015/picture) and `cogview-4-250304` (≈$0.01/picture), optionally comparing `standard` vs `hd` quality; the parent picks. Until a z.ai key is configured, `IMAGE_PROVIDER=none` (emoji scenes).
 2. **Cerebras rate limits** for the account tier — tune `GEN_CONCURRENCY` from observed 429s.
