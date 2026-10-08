@@ -204,6 +204,16 @@ _POSITION_REF = re.compile(
     r"|\b[A-D]\s+is\s+(?i:correct|right|the\s+(?:best\s+)?answer)\b"
     r"|\(?\b[A-D]\)|(?i:\([a-d]\))"
 )
+# A positional reference that _tidy can rewrite as "the correct sentence|choice|option|answer" ("Only the first
+# sentence shows…", "Sentence 1 uses…", "only sentence C") — not one that points at a wrong choice ("… is wrong").
+_POSITION_FIXABLE = re.compile(
+    r"(?:(?i:\bthe\s+(?:first|second|third|fourth|last)\s+"
+    r"(?P<ordinal>sentence|choice|option|answer)\b)"
+    r"|(?i:\b(?:the\s+)?(?P<numbered>sentence|choice|option))\s+(?:[1-4]|[A-D])\b)"
+    r"(?!\s+(?i:is|was)\s+(?i:wrong|incorrect|not)\b)"
+)
+# A spell_it prompt ending in a parenthetical cue without the "means:" label ("(makes trouble smaller)").
+_BARE_CUE = re.compile(r"\((?!\s*means\s*:)\s*(?P<body>[^()_]*[^\s()_])\s*\)\s*\.?\s*$", re.IGNORECASE)
 # inflect.tokenize's token pattern with the case kept (typographic apostrophes and hyphens included).
 _RAW_TOKEN = re.compile(r"[^\W_]+(?:['’‘ʼ\-‐‑][^\W_]+)*")
 
@@ -231,14 +241,33 @@ def _add_letter_hint(prompt: str, answer: str) -> str:
     return f"{prompt[: m.start()].rstrip()} {cue}"
 
 
+def _the_correct(m: re.Match[str]) -> str:
+    before = m.string[: m.start()].rstrip()
+    article = "The" if not before or before[-1] in ".!?" else "the"
+    return f"{article} correct {(m.group('ordinal') or m.group('numbered')).lower()}"
+
+
+def _repair_position(explanation: str) -> str:
+    """Rewrite an explanation's one reference to a choice by position as "the correct sentence" (etc.). Left
+    unchanged, for Q9 to reject, when there are several references, it points at a wrong choice, or the result
+    would be too long."""
+    if sum(1 for _ in _POSITION_REF.finditer(explanation)) != 1:
+        return explanation
+    fixed = _POSITION_FIXABLE.sub(_the_correct, explanation, count=1)
+    return fixed if len(fixed) <= EXPLANATION_MAX else explanation
+
+
 def _tidy(q: RawQuestion, *, legacy: bool = False) -> RawQuestion:
-    """Trim whitespace, normalize any run of 3+ underscores to "___", normalize spell_it answers, and
-    (AI questions only) add the first-letter hint to the spell_it cue so the blind check sees it."""
+    """Trim whitespace, normalize any run of 3+ underscores to "___", normalize spell_it answers. AI questions
+    (not legacy) are also repaired where it is safe: a positional explanation, a spell_it cue missing "means:",
+    and the first-letter hint added to the spell_it cue so the blind check sees it."""
     update: dict = {
         "prompt": _BLANK_RUN.sub("___", q.prompt.strip()),
         "choices": [c.strip() for c in q.choices],
         "explanation": q.explanation.strip(),
     }
+    if not legacy:
+        update["explanation"] = _repair_position(update["explanation"])
     if q.type == "spell_it":
         answers: list[str] = []
         for a in q.accepted_answers:
@@ -246,8 +275,9 @@ def _tidy(q: RawQuestion, *, legacy: bool = False) -> RawQuestion:
             if norm and norm not in answers:
                 answers.append(norm)
         update["accepted_answers"] = answers
-        if answers and not legacy:
-            update["prompt"] = _add_letter_hint(update["prompt"], answers[0])
+        if not legacy:
+            prompt = _BARE_CUE.sub(lambda m: f"(means: {m.group('body')})", update["prompt"])
+            update["prompt"] = _add_letter_hint(prompt, answers[0]) if answers else prompt
     return q.model_copy(update=update)
 
 

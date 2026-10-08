@@ -89,6 +89,14 @@ def test_valid_extra_forms_short_word_uses_whole_word_as_prefix() -> None:
     assert valid_extra_forms("go", ["went", "gone", "Goes"]) == ["gone", "goes"]
 
 
+def test_valid_extra_forms_phrase_keeps_an_irregular_first_token_with_the_same_rest() -> None:
+    forms = ["took for granted", "takes for granted", "kept for granted", "took for free", "Taken for Granted"]
+    kept = ["took for granted", "takes for granted", "taken for granted"]
+    assert valid_extra_forms("take for granted", forms) == kept
+    assert valid_extra_forms("give up", ["gave up", "gave in", "kept up"]) == ["gave up"]
+    assert valid_extra_forms("go", ["went"]) == []  # single words keep the 3-letter rule
+
+
 def test_valid_extra_forms_empty_word() -> None:
     assert valid_extra_forms("", ["anything"]) == []
 
@@ -145,7 +153,7 @@ def test_is_form_of(candidate: str, word: str, extra: tuple[str, ...], expected:
         ("She used a coupon in lieu of cash.", "in lieu of", (), True),
         ("In lieu of flowers, send cards.", "in lieu of", (), True),
         ("Of lieu in the end.", "in lieu of", (), False),  # wrong order
-        ("in the lieu of", "in lieu of", (), False),  # not contiguous
+        ("in lieu the of", "in lieu of", (), False),  # the tokens after the first stay contiguous
         ("She gives up too fast.", "give up", (), True),
         ("They kept giving up.", "give up", (), True),
         ("", "frugal", (), False),
@@ -153,6 +161,37 @@ def test_is_form_of(candidate: str, word: str, extra: tuple[str, ...], expected:
 )
 def test_contains_word(text: str, word: str, extra: tuple[str, ...], expected: bool) -> None:
     assert contains_word(text, word, extra) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "word", "extra", "expected"),
+    [
+        ("Aisha took her morning coffee for granted.", "take for granted", ("took for granted",), True),
+        ("Zoe takes her teacher's help for granted.", "take for granted", (), True),
+        ("He gave it up at last.", "give up", ("gave up",), True),
+        ("We take for granted the clean water.", "take for granted", (), True),  # contiguous still matches
+        ("They take it for granted.", "take for granted", (), True),
+        # 5 tokens between the first token and the rest
+        ("She took her big red morning coffee for granted.", "take for granted", ("took for granted",), False),
+        ("For granted, she took nothing.", "take for granted", ("took for granted",), False),  # out of order
+        ("She takes it for all granted.", "take for granted", (), False),  # the rest must stay contiguous
+        ("Give the dog a bone and then look up.", "give up", (), False),  # 6 between
+        ("He was unhappy at the happy party.", "happy", (), True),  # single words unaffected
+        ("He was unhappy.", "happy", (), False),
+    ],
+)
+def test_contains_word_separable_phrase(text: str, word: str, extra: tuple[str, ...], expected: bool) -> None:
+    assert contains_word(text, word, extra) is expected
+
+
+def test_contains_word_contiguous_only_when_asked() -> None:
+    assert contains_word("They take it for granted.", "take for granted", max_gap=0) is False
+    assert contains_word("They take for granted.", "take for granted", max_gap=0) is True
+
+
+def test_is_form_of_stays_contiguous() -> None:
+    assert is_form_of("gave it up", "give up", ["gave up"]) is False
+    assert is_form_of("gave up", "give up", ["gave up"]) is True
 
 
 def test_contains_word_with_multi_token_extra_form() -> None:

@@ -282,14 +282,14 @@ A **Learn card** is rejected (attempt consumed) if any of these fail:
 
 A **question** is dropped (others in the batch survive) if any of these fail:
 - Q1 choice types: exactly 4 choices, distinct after case-folding and trimming, `answer_index` in 0–3, `accepted_answers == []`. `spell_it`: `choices == []`, `answer_index == -1`.
-- Q2 `fill_blank` and `spell_it`: prompt contains exactly one `___` and does not otherwise contain the word (the code-added first-letter hint is ignored). `spell_it` prompt ends with a definition cue in parentheses.
+- Q2 `fill_blank` and `spell_it`: prompt contains exactly one `___` and does not otherwise contain the word (the code-added first-letter hint is ignored). `spell_it` prompt ends with a definition cue in parentheses (an AI prompt ending in a parenthetical without `means:` and without `___` gets the label added first).
 - Q3 `spell_it`: `accepted_answers` non-empty and every entry matches the word.
 - Q4 type-specific keys: `pick_word` and `fill_blank` — the correct choice is the target word (or a form); `meaning` — the correct choice is not identical to any distractor; `usage` — every choice contains the word; `synonym`/`antonym` — the correct choice appears in the card's `synonyms`/`antonyms`.
 - Q5 no reuse of Learn content: after case-folding, stripping punctuation, and filling `___` with the word and each form, neither the prompt nor any sentence-valued choice equals a Learn-card sentence (`examples`, `senses[].example`, `right_use`, `wrong_use`).
 - Q6 sentence length ≤ band limit + 5 words; explanation ≤ 160 chars.
 - Q7 no blocklisted term.
 - Q8 (top-ups) the normalized prompt does not equal an existing pool prompt (the letter hint is ignored on both sides).
-- Q9 the explanation does not refer to a choice by letter or position ("the first sentence", "the last one", "option B", "Answer: B", "B is correct", "(A)"); choices are shuffled. Legacy exempt.
+- Q9 the explanation does not refer to a choice by letter or position ("the first sentence", "the last one", "option B", "Answer: B", "B is correct", "(A)"); choices are shuffled. Before the check, an AI explanation with exactly one "the first|…|last sentence|choice|option|answer" or "sentence|choice|option 1–4/A–D" reference is repaired to "the correct sentence" (etc.) unless it points at a wrong choice or would exceed 160 chars. Legacy exempt.
 - Q10 the word is spelled correctly: no prompt or choice writes the word (or a form) with a hyphen added or dropped, a space dropped, or capitals inside it (`ephem-eral`, `ephemerAl`, `selfesteem`); a sentence-start capital or ALL CAPS is fine. Legacy exempt.
 
 **Blocklist matching** is whole-token after case-folding, including the §7.7 inflections of each entry; a rejection's error text names the blocked term.
@@ -308,8 +308,8 @@ Every rejection is logged with the raw model output (redacted) to `DATA_DIR/logs
 
 - **Tokenize:** case-fold; strip surrounding punctuation and a trailing possessive `'s`; keep internal hyphens and apostrophes.
 - **Rule-based forms:** `+s`, `+es`, `+ed`, `+d`, `+ing`, `+er`, `+est`, `+ly`, `+r`, `+st`; `y→ied/ies/ier/iest/ily`; drop-`e` + `ing/ed/er/est`; doubled final consonant + `ed/ing/er/est`; `-le→-ly`; `-ic→-ically`; `c→ck` + `ed/ing`; `ie→ying`.
-- **Model-supplied forms:** each entry of the card's `forms` is accepted if it shares the word's first 3 letters (guards against hallucinated "forms").
-- **Phrases:** all tokens must appear in order and contiguously; the inflection may fall on any one token.
+- **Model-supplied forms:** each entry of the card's `forms` is accepted if it shares the word's first 3 letters (guards against hallucinated "forms"); for a phrase, also if only its first token changes and keeps its first letter (`took for granted`, `gave up`).
+- **Phrases:** all tokens must appear in order; the tokens after the first are contiguous, and in running text up to 4 other tokens may stand between the first token and the rest (`took her morning coffee for granted`, `gave it up`); the inflection may fall on any one token. Blocklist phrases (§7.5) stay fully contiguous, and a whole-candidate match (`accepted_answers`, choices) is never split.
 
 This matcher is deliberately permissive and is used for content checks only. Grading of typed answers uses `accepted_answers`.
 

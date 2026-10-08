@@ -68,6 +68,6 @@ def find_blocked(text: str, blocklist: frozenset[str] | None = None) -> str | No
             if hit is not None:
                 return hit
     for phrase in phrases:
-        if contains_word(text, phrase):
+        if contains_word(text, phrase, max_gap=0):  # blocklist phrases must be contiguous
             return phrase
     return None

@@ -12,6 +12,8 @@ _TOKEN_RE = re.compile(r"[^\W_]+(?:['\-][^\W_]+)*")
 _CHAR_FIX = str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "‐": "-", "‑": "-"})
 _NO_DOUBLE = frozenset("aeiouwxy")
 _PLAIN_SUFFIXES = ("s", "es", "ed", "d", "ing", "er", "est", "ly", "r", "st")
+# Other tokens allowed between a phrase's first token and the rest in running text ("took her coffee for granted").
+MAX_PHRASE_GAP = 4
 
 
 def tokenize(text: str) -> list[str]:
@@ -70,16 +72,22 @@ def _normalize_phrase(text: str) -> str:
 def valid_extra_forms(word: str, forms: Iterable[str]) -> list[str]:
     """Model-supplied forms (normalized, deduped, in order) that share the word's first 3 letters.
 
-    Words shorter than 3 letters use the whole word as the prefix ("go" keeps "gone", rejects "went").
+    Words shorter than 3 letters use the whole word as the prefix ("go" keeps "gone", rejects "went"). A phrase
+    also keeps a form that changes only its first token, keeping that token's first letter ("took for granted",
+    "gave up"), so irregular past forms of a phrase's verb count.
     """
     base = _normalize_phrase(word)
     if not base:
         return []
     prefix = base[:3]
+    head, _, rest = base.partition(" ")
     kept: list[str] = []
     for form in forms:
         norm = _normalize_phrase(form)
-        if norm and norm.startswith(prefix) and norm not in kept:
+        if not norm or norm in kept:
+            continue
+        form_head, _, form_rest = norm.partition(" ")
+        if norm.startswith(prefix) or (rest and form_rest == rest and form_head[0] == head[0]):
             kept.append(norm)
     return kept
 
@@ -119,16 +127,30 @@ def is_form_of(candidate: str, word: str, extra_forms: Iterable[str] = ()) -> bo
     return tuple(tokens) in extras
 
 
-def contains_word(text: str, word: str, extra_forms: Iterable[str] = ()) -> bool:
-    """True if text contains the word or a form as whole tokens (phrases: contiguous and in order)."""
+def _windows(tokens: list[str], start: int, length: int, max_gap: int) -> Iterable[list[str]]:
+    """Candidate matches starting at tokens[start]: that token plus the next length-1 contiguous tokens after
+    skipping 0..max_gap other tokens (a single word never skips)."""
+    for gap in range(max_gap + 1 if length > 1 else 1):
+        end = start + gap + length
+        if end > len(tokens):
+            return
+        yield tokens[start : start + 1] + tokens[start + 1 + gap : end]
+
+
+def contains_word(
+    text: str, word: str, extra_forms: Iterable[str] = (), *, max_gap: int = MAX_PHRASE_GAP
+) -> bool:
+    """True if text contains the word or a form as whole tokens. A phrase's tokens appear in order; the tokens
+    after the first are contiguous, and up to max_gap other tokens may stand between the first token and the
+    rest ("took her morning coffee for granted", "gave it up")."""
     tokens = tokenize(text)
     base, extras = _patterns(word, extra_forms)
     if not tokens or not base:
         return False
     for i in range(len(tokens)):
-        if _match_at(tokens, i, base):
+        if any(_match_at(w, 0, base) for w in _windows(tokens, i, len(base), max_gap)):
             return True
         for extra in extras:
-            if tuple(tokens[i : i + len(extra)]) == extra:
+            if any(tuple(w) == extra for w in _windows(tokens, i, len(extra), max_gap)):
                 return True
     return False

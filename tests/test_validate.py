@@ -180,6 +180,29 @@ def test_l2_irregular_forms_count_but_hallucinated_forms_do_not():
     assert check.card.synonyms == ["try hard"]
 
 
+def test_l2_l4_accept_a_separable_phrase_with_irregular_forms():
+    card = make_card(
+        pos="verb phrase",
+        forms=["takes for granted", "took for granted", "taken for granted", "taking for granted"],
+        senses=[Sense(pos="verb phrase", definition="to not notice how much something helps you",
+                      example="Zoe takes her teacher's help for granted.")],
+        examples=[
+            "Aisha took her morning coffee for granted.",
+            "Ben took the sunny days for granted until the rain came.",
+            "Do you take clean water for granted?",
+            "Leo never takes his friends for granted.",
+        ],
+        synonyms=["undervalue"],
+        antonyms=["appreciate"],
+        right_use=RightUse(sentence="Kenji took his old bike for granted until it broke."),
+        wrong_use=WrongUse(sentence="Maya took the bus for granted to school.",
+                           why="It means not valuing something, not riding it somewhere."),
+    )
+    check = validate_card("take for granted", "6-8", card)
+    assert check.errors == []
+    assert len(check.card.examples) == 4
+
+
 # --- L3 ----------------------------------------------------------------------------------------------
 
 def test_l3_removes_the_word_and_truncates_to_five():
@@ -400,7 +423,6 @@ def test_q1_shape_rules(q):
         variant("fill_blank", prompt="Nina was ___ and saved ___ of her birthday money."),
         variant("fill_blank", prompt="Frugal Nina was ___ with her birthday money."),
         variant("spell_it", prompt="Mom stays ___ by using coupons at the store."),
-        variant("spell_it", prompt="Mom stays ___ by using coupons. (careful with money)"),
         variant("spell_it", prompt="Mom stays ___ (means: careful with money) by using coupons."),
         variant("spell_it", prompt="Mom stays ___ by using coupons. (means: frugal and careful)"),
         variant("spell_it", prompt="Mom stays ___ by using coupons. (means: )"),
@@ -616,17 +638,44 @@ def test_hint_leaves_legacy_questions_unchanged():
     assert drops == [] and kept[0].prompt == GOOD["spell_it"].prompt
 
 
+@pytest.mark.parametrize("ending", ["(makes trouble smaller)", "(makes trouble smaller).", "( makes trouble smaller )"])
+def test_bare_cue_gets_the_means_label_and_hint(ending):
+    q = rq("spell_it", f"Maya wanted to ___ the noise before bedtime. {ending}", [], -1, ["mitigate"])
+    assert kept_prompt(q, word="mitigate") == (
+        'Maya wanted to ___ the noise before bedtime. (means: makes trouble smaller; starts with "m")'
+    )
+
+
+def test_bare_cue_repair_needs_a_trailing_parenthetical_without_a_blank():
+    assert only(variant("spell_it", prompt="Mom stays ___ by using coupons at the store.")).startswith("Q2")
+    reason = only(variant("spell_it", prompt="Mom stays careful at the store (always ___)."))
+    assert reason is not None and reason.startswith("Q2")
+
+
+def test_bare_cue_is_not_repaired_for_legacy():
+    reason = only(variant("spell_it", prompt="Mom stays ___ by using coupons. (careful with money)"), legacy=True)
+    assert reason is not None and reason.startswith("Q2")
+
+
+PHRASAL = ["take for granted", "look up to", "run out of", "give up on"]
+
+
+def test_q2_separable_phrase_in_the_blank_passes():
+    q = rq("fill_blank", "Many people ___ clean water until a pipe breaks.", PHRASAL, 0)
+    assert reason_for("take for granted", q) is None
+
+
+def test_q2_split_phrase_outside_the_blank_is_still_caught():
+    q = rq("fill_blank", "Leo takes his bike for granted, and Mia will ___ her skates.", PHRASAL, 0)
+    assert reason_for("take for granted", q) == "Q2: prompt contains the word outside the blank"
+
+
 # --- Q9 ----------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
     "explanation",
     [
-        "The first sentence uses frugal the right way.",
-        "The last choice is the only one about saving.",
-        "the second option shows careful spending.",
-        "Option B is right because frugal means careful.",
         "Answer C is the one about saving money.",
-        "Choice 2 shows careful spending.",
         "(A) shows careful spending.",
         "A) shows careful spending.",
         "B is correct because Ava saves her money.",
@@ -637,6 +686,8 @@ def test_hint_leaves_legacy_questions_unchanged():
         "(a) is right because Ava saves her money.",
         "The third one shows careful spending.",
         "The last one is about saving money.",
+        "Sentence 1 is right and sentence 2 is not.",  # two positions: no safe repair
+        "The first choice is wrong, so frugal must mean careful.",  # points at a wrong choice
     ],
 )
 def test_q9_explanation_must_not_name_a_choice_position(explanation):
@@ -709,6 +760,35 @@ def test_q10_correctly_spelled_choices_pass():
     assert reason_for("ephemeral", rq("usage", 'Which sentence uses "ephemeral" correctly?', EPHEMERAL_USES, 0)) is None
 
 
+@pytest.mark.parametrize(
+    "explanation, repaired",
+    [
+        ("Only the first sentence shows the adjective meaning eager to learn.",
+         "Only the correct sentence shows the adjective meaning eager to learn."),
+        ('Sentence 1 uses "curious" to mean eager to learn.', 'The correct sentence uses "curious" to mean eager to learn.'),
+        ("The first choice matches the definition of gigantic.", "The correct choice matches the definition of gigantic."),
+        ("Only sentence 3 uses mitigate to mean lessen fatigue.",
+         "Only the correct sentence uses mitigate to mean lessen fatigue."),
+        ("the second option shows careful spending.", "The correct option shows careful spending."),
+        ("It saves money, so option B fits.", "It saves money, so the correct option fits."),
+        ("Saving is careful. Choice 2 shows it.", "Saving is careful. The correct choice shows it."),
+        ("The last answer names careful spending.", "The correct answer names careful spending."),
+    ],
+)
+def test_q9_positional_explanation_is_repaired(explanation, repaired):
+    kept, drops = vq([variant("meaning", explanation=explanation)])
+    assert drops == []
+    assert kept[0].explanation == repaired and len(repaired) <= validate.EXPLANATION_MAX
+
+
+def test_q9_repair_never_pushes_the_explanation_over_the_limit():
+    explanation = "Sentence 1 shows saving. " + "Frugal people spend with care. " * 4 + "Truly."
+    assert 150 < len(explanation) <= validate.EXPLANATION_MAX
+    assert only(variant("meaning", explanation=explanation)) == "Q9: explanation refers to a choice position"
+
+
 def test_q9_and_q10_skip_legacy_questions():
     assert only(variant("meaning", explanation="The first choice is right."), legacy=True) is None
+    kept, _ = vq([variant("meaning", explanation="The first choice is right.")], legacy=True)
+    assert kept[0].explanation == "The first choice is right."  # legacy is never repaired
     assert reason_for("ephemeral", rq("meaning", 'What does "ephem-eral" mean?', MEANINGS, 0), legacy=True) is None
