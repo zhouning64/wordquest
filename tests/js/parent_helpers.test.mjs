@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   AVATARS,
@@ -11,6 +11,7 @@ import {
   checkBackupFile,
   confirmMatches,
   countsText,
+  createRowRedrawer,
   errText,
   imageBadge,
   imageConfigError,
@@ -39,6 +40,7 @@ import {
   validateProfile,
   weakRow,
 } from "../../web/js/parent/helpers.js";
+import { queueBanner } from "../../web/js/parent/shell.js";
 
 test("previewHref and listHref build router hashes with each part URI-encoded", () => {
   assert.equal(previewHref("6-8", "in lieu of"), "#/parent/preview/6-8/in%20lieu%20of");
@@ -346,7 +348,123 @@ test("redrawAction redraws on changes, skips identical polls, and waits while fo
   // the parent's own action (add/remove/retry/regenerate) always redraws
   assert.equal(redrawAction(a, same, { force: true }), "redraw");
   assert.equal(redrawAction(a, changed, { force: true, busy: true }), "redraw");
-  // a deferred poll leaves `drawn` untouched, so the next poll still sees the change and redraws once focus is gone
+  // redrawAction itself is stateless: the same fresh data redraws as soon as focus is gone (createRowRedrawer below
+  // remembers the deferral, because the queue poll may not tick again)
   assert.equal(redrawAction(a, changed, { busy: true }), "defer");
   assert.equal(redrawAction(a, changed, { busy: false }), "redraw");
+});
+
+const sigs = (...statuses) => statuses.map((st, i) => rowSignature(`w${i}`, { status: st }));
+
+test("createRowRedrawer: a redraw deferred on the queue's last tick runs when focus leaves the rows", () => {
+  // The reviewer's reproduction: tick 1 (jobs running) draws; tick 2 is the last one (queue idle, the poll stops) and
+  // finds focus inside the rows, so it defers; nothing ticks again. Focus then leaves the rows.
+  const pending = sigs("pending", "pending");
+  const settled = sigs("pending", "failed");
+  let onScreen = null;
+  const redrawer = createRowRedrawer((s) => {
+    onScreen = s;
+  });
+  assert.equal(redrawer.update(pending, { busy: false }), "redraw");
+  assert.equal(redrawer.update(settled, { busy: true }), "defer");
+  assert.equal(redrawer.pending, true);
+  assert.deepEqual(onScreen, pending, "still the old rows while the parent is using one of them");
+  // focus moves to another control of the rows: still in use
+  assert.equal(redrawer.focusOut({ toInside: true }), "idle");
+  assert.deepEqual(onScreen, pending);
+  // focus leaves the rows (to another element, or to nothing): the deferred redraw runs now, without any new tick
+  assert.equal(redrawer.focusOut({ toInside: false }), "redraw");
+  assert.deepEqual(onScreen, settled);
+  assert.equal(redrawer.pending, false);
+  assert.equal(redrawer.focusOut({ toInside: false }), "idle", "nothing pending any more");
+});
+
+test("createRowRedrawer: pending state follows the data and the parent's own actions", () => {
+  let draws = 0;
+  const redrawer = createRowRedrawer(() => {
+    draws += 1;
+  });
+  const a = sigs("pending");
+  const b = sigs("ready");
+  const c = sigs("failed");
+  assert.equal(redrawer.focusOut({ toInside: false }), "idle", "nothing was drawn or deferred yet");
+  assert.equal(redrawer.update(a), "redraw");
+  assert.equal(draws, 1);
+  // identical data never redraws and never leaves anything pending
+  assert.equal(redrawer.update(sigs("pending"), { busy: true }), "unchanged");
+  assert.equal(redrawer.pending, false);
+  assert.equal(redrawer.focusOut({ toInside: false }), "idle");
+  assert.equal(draws, 1);
+  // deferred, then the data moves on again while focus is still inside: the newest data is drawn on focusOut
+  let last = null;
+  const r2 = createRowRedrawer((s) => {
+    last = s;
+  });
+  r2.update(a);
+  r2.update(b, { busy: true });
+  r2.update(c, { busy: true });
+  assert.equal(r2.focusOut({ toInside: false }), "redraw");
+  assert.deepEqual(last, c);
+  // deferred, then the data returns to what is on screen: nothing to do any more
+  const r3 = createRowRedrawer(() => {});
+  r3.update(a);
+  assert.equal(r3.update(b, { busy: true }), "defer");
+  assert.equal(r3.update(a, { busy: true }), "unchanged");
+  assert.equal(r3.pending, false);
+  assert.equal(r3.focusOut({ toInside: false }), "idle");
+  // a redraw caused by the parent's own action clears a pending deferral
+  const r4 = createRowRedrawer(() => {});
+  r4.update(a);
+  r4.update(b, { busy: true });
+  assert.equal(r4.update(b, { force: true, busy: true }), "redraw");
+  assert.equal(r4.pending, false);
+  assert.equal(r4.focusOut({ toInside: false }), "idle");
+});
+
+test("the real queueBanner stops after the idle tick, and the deferred redraw still runs when focus leaves the rows", async () => {
+  const realFetch = globalThis.fetch;
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const queues = [
+      { counts: { pending: 1, running: 1, done: 0, failed: 0 }, ai_calls_today: 3, ai_daily_limit: 2000, deferred_to_tomorrow: false },
+      { counts: { pending: 0, running: 0, done: 1, failed: 1 }, ai_calls_today: 6, ai_daily_limit: 2000, deferred_to_tomorrow: false },
+    ];
+    let polls = 0;
+    globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(queues[Math.min(polls++, queues.length - 1)]) });
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const el = { textContent: "", hidden: true, classList: { toggle() {} } };
+    let serverStatus = "pending"; // what GET /content would say for the one word
+    let focusInRows = false; // is the parent using a control in the rows?
+    let onScreen = null;
+    const redrawer = createRowRedrawer((s) => {
+      onScreen = s;
+    });
+    // same shape as lists.js: loadRows() then drawRows() on every tick, including the last one
+    const banner = queueBanner(el, { alive: () => true }, async () => {
+      redrawer.update(rowSignatures(["w"], [{ word: "w", status: serverStatus }]), { busy: focusInRows });
+    });
+    await banner.start(); // tick 1: jobs running, rows drawn
+    assert.deepEqual(onScreen, rowSignatures(["w"], [{ word: "w", status: "pending" }]));
+    assert.match(el.textContent, /Preparing words/);
+
+    serverStatus = "failed";
+    focusInRows = true; // e.g. the parent cancelled the Regenerate/remove confirm: focus is still on that control
+    mock.timers.tick(3000);
+    await flush(); // tick 2: the queue is idle, so this is the last tick
+    assert.equal(polls, 2);
+    assert.equal(el.textContent, "");
+    assert.equal(redrawer.pending, true);
+    assert.deepEqual(onScreen, rowSignatures(["w"], [{ word: "w", status: "pending" }]), "deferred: rows still show the old state");
+
+    mock.timers.tick(60000);
+    await flush();
+    assert.equal(polls, 2, "the poll has stopped: no tick will retry the redraw");
+
+    focusInRows = false; // focus leaves the rows (tab out / click elsewhere)
+    assert.equal(redrawer.focusOut({ toInside: false }), "redraw");
+    assert.deepEqual(onScreen, rowSignatures(["w"], [{ word: "w", status: "failed" }]));
+  } finally {
+    mock.timers.reset();
+    globalThis.fetch = realFetch;
+  }
 });

@@ -147,13 +147,43 @@ export function rowSignatures(words, rows) {
 // What to do with the word rows after content was fetched. `drawn` = signatures of the rows on screen (null before
 // the first draw), `next` = signatures of the fresh data. "force" is for redraws the parent just caused themselves
 // (add/remove a word, retry, regenerate): they always redraw. Polls redraw only when something changed ("unchanged"
-// otherwise) and wait ("defer", retried on the next tick) while focus is inside the rows (`busy`), so an open
-// "Regenerate…" menu or a focused Retry/✕/Preview control is never destroyed under the parent's hands.
+// otherwise) and hold back ("defer") while focus is inside the rows (`busy`), so an open "Regenerate…" menu or a
+// focused Retry/✕/Preview control is never destroyed under the parent's hands. A deferred redraw is not lost: see
+// createRowRedrawer.
 export function redrawAction(drawn, next, { force = false, busy = false } = {}) {
   if (force || !drawn) return "redraw";
   const same = drawn.length === next.length && drawn.every((sig, i) => sig === next[i]);
   if (same) return "unchanged";
   return busy ? "defer" : "redraw";
+}
+
+// Bookkeeping for the word rows of the list page; `draw(signatures)` does the DOM work, so the sequences can be tested
+// in Node. update() is called after every fetch with the signatures of the fresh data. A redraw that was deferred
+// because focus was inside the rows stays pending and runs when focus leaves them (focusOut): the queue poll stops
+// after the tick that finds the queue idle, so "try again on the next tick" is not enough (the rows would stay at
+// "preparing" until a reload). Returns the action taken: "redraw" | "unchanged" | "defer" (and "idle" from focusOut).
+export function createRowRedrawer(draw) {
+  let drawn = null;
+  let latest = null;
+  let pending = false;
+  const run = (next, opts) => {
+    latest = next;
+    const action = redrawAction(drawn, next, opts);
+    pending = action === "defer";
+    if (action === "redraw") {
+      draw(next);
+      drawn = next;
+    }
+    return action;
+  };
+  return {
+    update: (next, { force = false, busy = false } = {}) => run(next, { force, busy }),
+    // Focus left the control that had it. `toInside` = it moved to another control of the rows (still in use).
+    focusOut: ({ toInside = false } = {}) => (pending && !toInside && latest ? run(latest, { busy: false }) : "idle"),
+    get pending() {
+      return pending;
+    },
+  };
 }
 
 // "resume": generation failed → PATCH the list's assignment again, so on_lists_changed → ensure_generation

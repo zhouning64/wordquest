@@ -9,6 +9,7 @@ import {
   asRows,
   badge,
   bandsForList,
+  createRowRedrawer,
   hasContent,
   imageBadge,
   imageErrorText,
@@ -17,7 +18,6 @@ import {
   previewHref,
   profilesForList,
   readinessText,
-  redrawAction,
   retryAction,
   rowsByWord,
   rowSignatures,
@@ -304,22 +304,30 @@ async function renderDetail(root, ctx, id, bandParam) {
   const bannerEl = body.querySelector("#qbanner");
   let rows = [];
   let banner = null;
-  let drawn = null; // signatures of the word rows currently on screen (null until the first draw)
+
+  // Redraws of the word rows (selects, buttons, links) are held back while the parent is using one of them; see
+  // createRowRedrawer. `draw` is the only place that rebuilds the rows.
+  const redrawer = createRowRedrawer(() => {
+    const by = rowsByWord(rows);
+    wordsEl.innerHTML = list.words.map((w) => wordRowHtml(w, band ? by.get(w) : null, band)).join("") || `<p class="muted">This list is empty.</p>`;
+  });
 
   // The queue poll calls this every few seconds while words are being prepared. The heading and the "x / y ready" chip
-  // are plain text and always refreshed; the word rows (selects, buttons, links) are only rebuilt when their data
-  // changed, and not while the parent is using one of them. `force` is for redraws caused by the parent's own action.
+  // are plain text and always refreshed; the rows are only rebuilt when their data changed, and not while the parent
+  // is using one of them. `force` is for redraws caused by the parent's own action.
   const drawRows = ({ force = false } = {}) => {
-    const by = rowsByWord(rows);
     headingEl.textContent = `Words (${list.words.length})`;
     readyEl.hidden = !band;
     readyEl.textContent = band ? `${BAND_LABEL[band]}: ${readinessText(list.words, rows)}` : "";
-    const next = rowSignatures(list.words, band ? rows : []);
-    const busy = wordsEl.contains(document.activeElement);
-    if (redrawAction(drawn, next, { force, busy }) !== "redraw") return;
-    wordsEl.innerHTML = list.words.map((w) => wordRowHtml(w, band ? by.get(w) : null, band)).join("") || `<p class="muted">This list is empty.</p>`;
-    drawn = next;
+    redrawer.update(rowSignatures(list.words, band ? rows : []), { force, busy: wordsEl.contains(document.activeElement) });
   };
+  // The poll stops after the tick that finds the queue idle, so a redraw deferred on that tick (focus inside the rows,
+  // e.g. after cancelling a confirm) would never be retried: run it when focus leaves the rows.
+  const onFocusOut = (ev) => {
+    if (!stillOn(ctx)) return;
+    redrawer.focusOut({ toInside: Boolean(ev.relatedTarget) && wordsEl.contains(ev.relatedTarget) });
+  };
+  wordsEl.addEventListener("focusout", onFocusOut);
   const loadRows = async ({ force = false } = {}) => {
     if (band) rows = await fetchContent(id, band);
     if (stillOn(ctx)) drawRows({ force });
@@ -441,12 +449,19 @@ async function renderDetail(root, ctx, id, bandParam) {
   } catch (e) {
     errorBox(wordsEl, e);
   }
-  if (!stillOn(ctx)) return undefined;
+  const cleanup = () => {
+    wordsEl.removeEventListener("focusout", onFocusOut);
+    if (banner) banner.stop();
+  };
+  if (!stillOn(ctx)) {
+    cleanup();
+    return undefined;
+  }
   if (!aiConfigured(status)) {
     showAiOff(bannerEl);
-    return undefined;
+    return cleanup;
   }
   banner = queueBanner(bannerEl, ctx, () => loadRows().catch(() => {}));
   banner.start();
-  return () => banner.stop();
+  return cleanup;
 }

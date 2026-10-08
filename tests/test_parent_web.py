@@ -70,8 +70,11 @@ def test_parent_styles_are_appended_to_app_css():
 #      combination of those; or
 #   2. listed in ALLOWED_INTERPOLATIONS with the number of times it occurs in that file and the reason it is safe.
 # Anything else fails the test, so a new unescaped interpolation (even a copy of an allowlisted expression, because the
-# counts must match exactly) cannot slip in without a reviewed allowlist change. Scanning problems (unterminated
-# strings or templates) also fail the test instead of being guessed around.
+# counts must match exactly) cannot slip in without a reviewed allowlist change. Values allowlisted as plain text
+# (TEXT_SINK) must stay in a template passed directly to toast()/window.confirm()/frame() or assigned to .textContent
+# (and RETURNED_TEXT helpers must not put theirs into markup), so moving an allowlisted value into an innerHTML
+# template fails even though its count is unchanged. Scanning problems (unterminated strings or templates) also fail
+# the test instead of being guessed around.
 # ======================================================================================================================
 
 
@@ -106,9 +109,11 @@ def _skip_comment(src, i):
     return j + 2
 
 
-def _skip_template(src, i, found=None, depth=0):
+def _skip_template(src, i, found=None, depth=0, root=None):
     """src[i] is a backtick. Returns the index after the closing backtick; every `${expr}` met on the way (nested
-    templates included) is appended to `found` as (line, expr, depth, text_before)."""
+    templates included) is appended to `found` as (line, expr, depth, text_before, root_start, enclosing_start), where
+    root_start/enclosing_start are the offsets of the outermost / the directly enclosing template literal."""
+    root = i if root is None else root
     j = i + 1
     while j < len(src):
         c = src[j]
@@ -117,16 +122,16 @@ def _skip_template(src, i, found=None, depth=0):
         elif c == "`":
             return j + 1
         elif c == "$" and src.startswith("${", j):
-            end = _skip_expression(src, j + 2, found, depth + 1)
+            end = _skip_expression(src, j + 2, found, depth + 1, root)
             if found is not None:
-                found.append((_line_of(src, j), src[j + 2:end], depth, src[max(0, j - 300):j]))
+                found.append((_line_of(src, j), src[j + 2:end], depth, src[max(0, j - 300):j], root, i))
             j = end + 1
         else:
             j += 1
     raise ScanError(f"unterminated template literal at line {_line_of(src, i)}")
 
 
-def _skip_expression(src, i, found, depth):
+def _skip_expression(src, i, found, depth, root):
     """Scans JS code up to the `}` that closes a `${`; returns the index of that brace."""
     level = 0
     while i < len(src):
@@ -134,7 +139,7 @@ def _skip_expression(src, i, found, depth):
         if c in "'\"":
             i = _skip_string(src, i)
         elif c == "`":
-            i = _skip_template(src, i, found, depth)
+            i = _skip_template(src, i, found, depth, root)
         elif c == "/" and src[i + 1:i + 2] in ("/", "*"):
             i = _skip_comment(src, i)
         else:
@@ -149,7 +154,8 @@ def _skip_expression(src, i, found, depth):
 
 
 def interpolations(src):
-    """Every `${...}` inside any template literal of `src`: sorted (line, expr, depth, text_before) tuples."""
+    """Every `${...}` inside any template literal of `src`: sorted (line, expr, depth, text_before, root_start,
+    enclosing_start) tuples."""
     found = []
     i = 0
     while i < len(src):
@@ -163,6 +169,57 @@ def interpolations(src):
         else:
             i += 1
     return sorted(found)
+
+
+def _static_text(src, i):
+    """The literal text of the template literal starting at src[i] (everything outside its `${...}` parts)."""
+    out = []
+    j = i + 1
+    while j < len(src) and src[j] != "`":
+        if src[j] == "\\":
+            out.append(src[j:j + 2])
+            j += 2
+        elif src.startswith("${", j):
+            j = _skip_expression(src, j + 2, None, 0, None) + 1
+        else:
+            out.append(src[j])
+            j += 1
+    return "".join(out)
+
+
+CALL_NAME = re.compile(r"([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*$")
+
+
+def template_uses(src):
+    """For every template literal that is not inside another template's `${}`: how it is used, as a label. The label is
+    the name of the innermost enclosing call (`toast`, `window.confirm`, `frame`, ...), "textContent" when it is the
+    right-hand side of `x.textContent =`, or None for anything else."""
+    uses = {}
+    stack = []  # (open bracket, callee name) of the brackets open at this point of the code
+    i = 0
+    while i < len(src):
+        c = src[i]
+        if c in "'\"":
+            i = _skip_string(src, i)
+        elif c == "/" and src[i + 1:i + 2] in ("/", "*"):
+            i = _skip_comment(src, i)
+        elif c == "`":
+            before = src[:i].rstrip()
+            if re.search(r"\.textContent\s*=$", before):
+                uses[i] = "textContent"
+            elif stack and stack[-1][0] == "(":
+                uses[i] = stack[-1][1]
+            else:
+                uses[i] = None
+            i = _skip_template(src, i)
+        else:
+            if c in "([{":
+                m = CALL_NAME.search(src[max(0, i - 80):i]) if c == "(" else None
+                stack.append((c, m.group(1) if m else None))
+            elif c in ")]}" and stack:
+                stack.pop()
+            i += 1
+    return uses
 
 
 def _top_level(expr):
@@ -352,16 +409,32 @@ def context_problems(expr, before):
     return problems
 
 
+# Where a value that is allowlisted as plain text (TEXT_SINK) may appear: only in a template passed directly to one of
+# these calls, or assigned to .textContent. Never in a template that ends up in innerHTML (or anywhere else).
+TEXT_ONLY_USES = ("toast", "window.confirm", "frame", "textContent")
+
+
 def guard_problems(src, allowed):
-    """Problems of one JS source: unreviewed interpolations, unsafe contexts and stale allowlist entries.
-    `allowed` maps skeleton -> (expected_count, reason)."""
+    """Problems of one JS source: unreviewed interpolations, unsafe contexts, text-only values used outside a text
+    context, and stale allowlist entries. `allowed` maps skeleton -> (expected_count, reason)."""
     problems = []
     unreviewed = {}
-    for line, expr, _depth, before in interpolations(src):
+    uses = template_uses(src)
+    for line, expr, _depth, before, root, enclosing in interpolations(src):
         for what in context_problems(expr, before):
             problems.append(f"line {line}: ${{{skeleton(expr)}}} is {what}")
-        if not is_safe_output(expr):
-            unreviewed.setdefault(skeleton(expr), []).append(line)
+        if is_safe_output(expr):
+            continue
+        sk = skeleton(expr)
+        unreviewed.setdefault(sk, []).append(line)
+        reason = allowed.get(sk, (0, ""))[1]
+        if reason.startswith(TEXT_SINK) and uses.get(root) not in TEXT_ONLY_USES:
+            problems.append(
+                f"line {line}: ${{{sk}}} is only allowlisted as plain text (toast()/window.confirm()/frame()/.textContent) "
+                f"but its template is used as {uses.get(root)!r}"
+            )
+        if reason.startswith((TEXT_SINK, RETURNED_TEXT)) and "<" in _static_text(src, enclosing):
+            problems.append(f"line {line}: ${{{sk}}} is only allowlisted as plain text but sits in a template with markup")
     for sk, lines in unreviewed.items():
         want = allowed.get(sk, (0, ""))[0]
         if len(lines) != want:
@@ -379,7 +452,11 @@ def sink_problems(src, allowed):
     """Every `.innerHTML = <rhs>;` must assign a safe_output expression or an allowlisted constant; other HTML sinks
     (insertAdjacentHTML, outerHTML, document.write, ...) are not used at all."""
     problems = []
-    for m in re.finditer(r"insertAdjacentHTML|outerHTML|document\.write|createContextualFragment|srcdoc|\beval\(|new Function", src):
+    for m in re.finditer(
+        r"insertAdjacentHTML|outerHTML|document\.write|createContextualFragment|srcdoc|setHTMLUnsafe|\bDOMParser\b"
+        r"|parseFromString|createHTMLDocument|\beval\(|new Function",
+        src,
+    ):
         problems.append(f"line {_line_of(src, m.start())}: {m.group(0)} is not allowed in the Parent area")
     assignments = list(re.finditer(r"\.innerHTML\s*=(?!=)", src))
     if len(assignments) != len(re.findall(r"innerHTML", src)):
@@ -427,8 +504,8 @@ def sink_problems(src, allowed):
 NUMBER = "a number (array length, index, or Number()/Math result), so it can only be digits"
 CLASS_NAME = "CSS class from badge()/imageBadge() in helpers.js, which only return the literals is-ready/is-busy/is-failed/is-none"
 CONSTANT = "a fixed constant defined in the Parent area (not server data)"
-TEXT_SINK = "only reaches a plain-text sink (toast() sets textContent; window.confirm() dialog; textContent assignment), never innerHTML"
-ESCAPED_LATER = "plain text returned by a helper whose only HTML use is wrapped in esc() (see the comment on the entry)"
+TEXT_SINK = "only reaches a plain-text sink (toast() sets textContent; window.confirm() dialog; textContent assignment), never innerHTML; enforced by the guard: only in templates passed directly to toast()/window.confirm()/frame() or assigned to .textContent, and without markup"
+RETURNED_TEXT = "plain text returned by a helper; callers only use it through esc() or textContent (see the comment on the entry)"
 LOCAL_HTML = "a local value built in the same function from templates whose interpolations are checked by this test"
 
 ALLOWED_INTERPOLATIONS = {
@@ -451,14 +528,14 @@ ALLOWED_INTERPOLATIONS = {
         "pending": (1, NUMBER),
         "running": (1, NUMBER),
         # imageProviderText(): plain text from /api/parent/status; its only HTML use is esc(imageProviderText(st)).
-        "p": (1, ESCAPED_LATER),
-        "status.image_model": (1, ESCAPED_LATER),
+        "p": (1, RETURNED_TEXT),
+        "status.image_model": (1, RETURNED_TEXT),
         # checkBackupFile(): shown through errEl.textContent in backup.js only (the version comes from an uploaded file).
-        "String(data.version)": (1, TEXT_SINK),
+        "String(data.version)": (1, RETURNED_TEXT),
         # countsText(): `${v} ${k...}` with v filtered by typeof number; k is a server key. backup.js only uses it as
         # esc(summary).
-        "v": (1, ESCAPED_LATER),
-        'k.replace(/_/g, "")': (1, ESCAPED_LATER),
+        "v": (1, RETURNED_TEXT),
+        'k.replace(/_/g, "")': (1, RETURNED_TEXT),
     },
     "lists.js": {
         # n = array length (wordCount, rejectedHtml, the live entry counter).
@@ -659,7 +736,7 @@ def test_scanner_skips_strings_and_comments_and_follows_nested_templates():
         "/* ${notReal} */ const s = \"a ` quote\" + 'it`s';\n"
         "const t = `x ${a ? `y ${b} ${'}'}` : `${c}`} z`;\n"
     )
-    found = [expr for _line, expr, _depth, _before in interpolations(js)]
+    found = [item[1] for item in interpolations(js)]
     assert sorted(found) == sorted(["b", "'}'", "c", "a ? `y ${b} ${'}'}` : `${c}`"])
 
 
@@ -685,8 +762,87 @@ def test_sink_guard_checks_every_innerhtml_assignment():
 
 def test_list_page_poll_keeps_the_word_rows_and_their_focus():
     # The queue poll must not rebuild the rows (open "Regenerate…" menus, focused Retry/remove/Preview controls) when
-    # nothing changed or while the parent is using one of them (decision logic: redrawAction in helpers.js).
+    # nothing changed or while the parent is using one of them, and a redraw held back on the poll's last tick must
+    # run when focus leaves the rows (decision logic and its sequences: createRowRedrawer in helpers.js).
     src = (PARENT_DIR / "lists.js").read_text(encoding="utf-8")
-    assert "redrawAction(drawn, next, { force, busy })" in src
-    assert "wordsEl.contains(document.activeElement)" in src
-    assert src.count("wordsEl.innerHTML") == 1  # the rows are rebuilt in exactly one place: drawRows
+    assert "createRowRedrawer(" in src
+    assert "redrawer.update(" in src and "wordsEl.contains(document.activeElement)" in src
+    assert 'wordsEl.addEventListener("focusout", onFocusOut)' in src
+    assert 'wordsEl.removeEventListener("focusout", onFocusOut)' in src  # removed in the page's cleanup
+    assert "redrawer.focusOut(" in src
+    assert src.count("wordsEl.innerHTML") == 1  # the rows are rebuilt in exactly one place (the redrawer's draw callback)
+
+
+# ---- text-only values must not reach HTML (allowlisted as TEXT_SINK / RETURNED_TEXT) --------------------------------
+
+TEXT_ALLOWED = {"word": (1, TEXT_SINK)}
+
+
+@pytest.mark.parametrize(
+    "js",
+    [
+        "toast(`Removed ${word}`);",
+        "if (!window.confirm(`Remove \u201c${word}\u201d from the list?`)) return;",
+        'const body = frame(root, ctx, "lists", word ? `Preview: ${word}` : "Preview");',
+        "headingEl.textContent = `Removed ${word}`;",
+        "toast(cond ? `Removed ${word}` : `Nothing`);",
+    ],
+)
+def test_text_only_values_are_accepted_in_text_contexts(js):
+    assert guard_problems(js, TEXT_ALLOWED) == []
+
+
+@pytest.mark.parametrize(
+    "js",
+    [
+        "headErr.innerHTML = `Removed <b>${word}</b>`;",  # the review probe: a toast() turned into an innerHTML assignment
+        "headErr.innerHTML = `Removed ${word}`;",
+        "toast(`Removed <b>${word}</b>`);",  # markup in a text template
+        "toast(`a ${cond ? `<i>${word}</i>` : ''}`);",  # markup in a nested template
+        "toast(format(`Removed ${word}`));",  # not passed directly to toast()
+        "const text = `Removed ${word}`;",
+        "box.className = `x ${word}`;",
+        "return `Removed ${word}`;",
+    ],
+)
+def test_text_only_values_are_rejected_outside_text_contexts(js):
+    problems = guard_problems(js, TEXT_ALLOWED)
+    assert problems, js
+    assert any("plain text" in p for p in problems)
+
+
+def test_returned_text_helpers_may_not_put_their_values_into_markup():
+    allowed = {"p": (1, RETURNED_TEXT)}
+    assert guard_problems("function f() { return `${p} (x)`; }", allowed) == []
+    assert any("markup" in p for p in guard_problems("function f() { return `<b>${p}</b>`; }", allowed))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "headErr.innerHTML = `Removed <b>${word}</b>`;",  # the review's probe
+        "headErr.innerHTML = `Removed ${word}`;",
+    ],
+)
+def test_real_lists_js_fails_when_a_toast_becomes_an_innerhtml_assignment(mutation):
+    src = (PARENT_DIR / "lists.js").read_text(encoding="utf-8")
+    allowed = ALLOWED_INTERPOLATIONS["lists.js"]
+    assert guard_problems(src, allowed) == []
+    assert src.count("toast(`Removed ${word}`);") == 1
+    mutated = src.replace("toast(`Removed ${word}`);", mutation)
+    problems = guard_problems(mutated, allowed)
+    assert any("${word}" in p and "plain text" in p for p in problems), problems
+
+
+@pytest.mark.parametrize(
+    "js",
+    [
+        "el.setHTMLUnsafe(x);",
+        "new DOMParser().parseFromString(x, 'text/html');",
+        "const d = new window.DOMParser();",
+        "doc.parseFromString(x, 'text/html');",
+        "document.implementation.createHTMLDocument('');",
+    ],
+)
+def test_sink_guard_forbids_the_other_html_parsing_apis(js):
+    assert sink_problems(js, {}) != []
