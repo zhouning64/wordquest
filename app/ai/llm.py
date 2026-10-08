@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
@@ -60,20 +61,30 @@ async def _sleep(seconds: float) -> None:
 
 
 def _snippet(text: str) -> str:
-    text = " ".join(str(text).split())
+    # Redact the whole text before collapsing and cutting it: a key that straddles the cut would leave a prefix
+    # behind, because redact() only matches the complete secret.
+    text = " ".join(redact(str(text)).split())
     if len(text) > _SNIPPET_CHARS:
         return text[:_SNIPPET_CHARS] + "…"
     return text
 
 
+def parse_retry_after(raw: str | None) -> float | None:
+    """Seconds from a Retry-After header. Missing, unparseable or non-finite (inf, -inf, nan) gives None (no
+    hint); a negative value gives 0.0. The job worker computes now + retry_after, so nothing else may pass."""
+    if raw is None:
+        return None
+    try:
+        seconds = float(raw.strip())
+    except ValueError:
+        return None
+    if not math.isfinite(seconds):
+        return None
+    return max(0.0, seconds)
+
+
 def _rate_limited(resp: httpx.Response) -> RateLimited:
-    retry_after: float | None = None
-    raw = resp.headers.get("retry-after")
-    if raw is not None:
-        try:
-            retry_after = max(0.0, float(raw.strip()))
-        except ValueError:
-            retry_after = None
+    retry_after = parse_retry_after(resp.headers.get("retry-after"))
     body = resp.text
     daily = resp.headers.get("x-ratelimit-remaining-requests-day") == "0" or "day" in body.lower()
     return RateLimited(f"HTTP 429 rate limited: {_snippet(body)}", retry_after=retry_after, daily=daily)

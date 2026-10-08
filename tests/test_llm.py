@@ -307,3 +307,24 @@ async def test_on_request_daily_cap_propagates_without_http():
     with pytest.raises(DailyCapReached):
         await call(handler, on_request=capped)
     assert handler.requests == []
+
+
+@pytest.mark.parametrize("status", [400, 429])
+async def test_error_body_is_redacted_before_it_is_cut_to_300_chars(status):
+    """The key starts at character 290 of the body. Cutting first would keep its first 10 characters, which
+    redact() can no longer match. The whole body is redacted before the cut."""
+    register_secrets([API_KEY])
+    handler = Recorder(httpx.Response(status, text="x" * 290 + API_KEY))
+    with pytest.raises(LLMError) as ei:
+        await call(handler)
+    message = str(ei.value)
+    assert API_KEY[:8] not in message
+    assert "[REDACTED]" in message
+
+
+@pytest.mark.parametrize("raw, expected", [("inf", None), ("-inf", None), ("nan", None), ("-5", 0.0)])
+async def test_429_retry_after_is_a_finite_non_negative_number(raw, expected):
+    handler = Recorder(httpx.Response(429, headers={"retry-after": raw}, json={"message": "slow down"}))
+    with pytest.raises(RateLimited) as ei:
+        await call(handler)
+    assert ei.value.retry_after == expected

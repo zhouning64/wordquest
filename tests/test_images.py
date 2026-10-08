@@ -499,6 +499,64 @@ async def test_on_request_can_block_the_call():
     assert hits == []
 
 
+STRADDLE_KEY = "sk-img-straddle-7c3d9e1f2a"
+
+
+@pytest.mark.parametrize("status, error", [(400, LLMError), (500, TransientError), (429, RateLimited)])
+async def test_error_body_is_redacted_before_it_is_cut_to_300_chars(status, error):
+    """The key starts at character 290 of the body. Cutting first would keep its first 10 characters, which
+    redact() (an exact-substring replace) can no longer match. The whole body is redacted before the cut."""
+    register_secrets([STRADDLE_KEY])
+    body = "x" * 290 + STRADDLE_KEY
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, text=body)
+
+    p = provider(handler, key=STRADDLE_KEY)
+    try:
+        with pytest.raises(error) as exc:
+            await p.generate("x")
+    finally:
+        await p.aclose()
+    assert STRADDLE_KEY[:8] not in str(exc.value)
+    assert "[REDACTED]" in str(exc.value)
+
+
+async def test_download_error_body_is_redacted_before_it_is_cut_to_300_chars():
+    register_secrets([STRADDLE_KEY])
+    body = "x" * 290 + STRADDLE_KEY
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"data": [{"url": "https://cdn.example/out/fox.png"}]})
+        return httpx.Response(404, text=body)
+
+    p = provider(handler, key=STRADDLE_KEY)
+    try:
+        with pytest.raises(LLMError) as exc:
+            await p.generate("x")
+    finally:
+        await p.aclose()
+    assert STRADDLE_KEY[:8] not in str(exc.value)
+    assert "[REDACTED]" in str(exc.value)
+
+
+@pytest.mark.parametrize("raw, expected", [("inf", None), ("-inf", None), ("nan", None), ("-5", 0.0)])
+async def test_provider_429_retry_after_is_a_finite_non_negative_number(raw, expected):
+    """inf, -inf and nan are no hint (None); a negative value counts as 0. The worker computes now + retry_after."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"retry-after": raw}, text="slow down")
+
+    p = provider(handler)
+    try:
+        with pytest.raises(RateLimited) as exc:
+            await p.generate("x")
+    finally:
+        await p.aclose()
+    assert exc.value.retry_after == expected
+
+
 # ---------------------------------------------------------------- make_image_provider
 
 

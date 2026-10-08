@@ -9,12 +9,15 @@ from typing import Callable
 import httpx
 
 from app.ai.images.base import ImageProvider
-from app.ai.llm import LLMError, RateLimited, TransientError
+from app.ai.llm import LLMError, RateLimited, TransientError, parse_retry_after
 from app.security import redact
 
 DEFAULT_SIZE = "1024x1024"  # valid for both z.ai models (glm-image and cogview-4-250304)
 MAX_IMAGE_MB = 20
 MAX_IMAGE_BYTES = MAX_IMAGE_MB * 1024 * 1024  # larger downloaded or decoded pictures are refused
+# Bytes read from a failed download's body. Read well past the 300 characters kept in the message, so a secret
+# that straddles the cut is whole when redacted (the message is cut only after redaction).
+_ERROR_BODY_READ_BYTES = 4096
 
 
 class OpenAICompatibleImageProvider(ImageProvider):
@@ -100,7 +103,7 @@ class OpenAICompatibleImageProvider(ImageProvider):
         try:
             async with self._client.stream("GET", url, follow_redirects=True) as resp:
                 if not resp.is_success:
-                    head = await _read_at_most(resp, 300)
+                    head = await _read_at_most(resp, _ERROR_BODY_READ_BYTES)
                     _raise_for_status(resp, "image download", head.decode("utf-8", errors="replace"))
                     # still not 2xx, e.g. a 3xx without a usable Location
                     raise LLMError(redact(f"image download HTTP {resp.status_code}"))
@@ -135,13 +138,10 @@ def _raise_for_status(resp: httpx.Response, what: str, text: str | None = None) 
     """Raise the llm.py exception for an HTTP error status; `text` (default: the body) goes into the message."""
     if resp.status_code < 400:
         return
-    detail = (resp.text if text is None else text)[:300]
+    # Redact the whole body before cutting it: a key that straddles the cut would leave a prefix behind.
+    detail = redact(resp.text if text is None else text)[:300]
     if resp.status_code == 429:
-        retry_after: float | None
-        try:
-            retry_after = float(resp.headers.get("retry-after", ""))
-        except ValueError:
-            retry_after = None
+        retry_after = parse_retry_after(resp.headers.get("retry-after"))
         raise RateLimited(redact(f"{what} rate limited: {detail}"), retry_after=retry_after)
     if resp.status_code >= 500:
         raise TransientError(redact(f"{what} HTTP {resp.status_code}: {detail}"))
