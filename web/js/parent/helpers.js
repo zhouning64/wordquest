@@ -124,6 +124,38 @@ export function poolSize(row) {
   return Number((row && (row.pool_size ?? row.pool)) || 0);
 }
 
+// Everything a word row on the list page is drawn from, as one string. The queue poll redraws the rows only when
+// the signatures of the words on screen changed (see redrawAction), so unrelated polls never rebuild the controls.
+export function rowSignature(word, row) {
+  if (!row) return JSON.stringify([word, null]);
+  return JSON.stringify([
+    word,
+    row.status ?? null,
+    row.image_status ?? null,
+    poolSize(row),
+    Boolean(row.regenerating),
+    row.error ?? "",
+    row.image_error ?? "",
+  ]);
+}
+
+export function rowSignatures(words, rows) {
+  const by = rowsByWord(rows);
+  return (words || []).map((w) => rowSignature(w, by.get(w)));
+}
+
+// What to do with the word rows after content was fetched. `drawn` = signatures of the rows on screen (null before
+// the first draw), `next` = signatures of the fresh data. "force" is for redraws the parent just caused themselves
+// (add/remove a word, retry, regenerate): they always redraw. Polls redraw only when something changed ("unchanged"
+// otherwise) and wait ("defer", retried on the next tick) while focus is inside the rows (`busy`), so an open
+// "Regenerate…" menu or a focused Retry/✕/Preview control is never destroyed under the parent's hands.
+export function redrawAction(drawn, next, { force = false, busy = false } = {}) {
+  if (force || !drawn) return "redraw";
+  const same = drawn.length === next.length && drawn.every((sig, i) => sig === next[i]);
+  if (same) return "unchanged";
+  return busy ? "defer" : "redraw";
+}
+
 // "resume": generation failed → PATCH the list's assignment again, so on_lists_changed → ensure_generation
 // resumes from the failed stage. "image": only the picture failed → regenerate {part: "image"}.
 export function retryAction(row) {

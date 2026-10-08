@@ -25,7 +25,10 @@ import {
   queueInfo,
   readiness,
   readinessText,
+  redrawAction,
   retryAction,
+  rowSignature,
+  rowSignatures,
   sessionRow,
   shouldPoll,
   splitEntries,
@@ -286,4 +289,64 @@ test("status helpers read the parent status payload", () => {
 test("AVATARS offers 16 distinct emoji", () => {
   assert.equal(AVATARS.length, 16);
   assert.equal(new Set(AVATARS).size, 16);
+});
+
+test("rowSignature changes with every field a word row is drawn from, and with nothing else", () => {
+  const row = { word: "tenacious", status: "ready", image_status: "ready", pool_size: 5, regenerating: false, error: "", image_error: "" };
+  const base = rowSignature("tenacious", row);
+  assert.equal(rowSignature("tenacious", { ...row }), base);
+  assert.equal(rowSignature("tenacious", { ...row, band: "6-8", content_version: 2, source: "legacy" }), base);
+  assert.equal(rowSignature("tenacious", { ...row, regenerating: undefined }), base);
+  assert.equal(rowSignature("tenacious", { ...row, pool: undefined, error: undefined, image_error: undefined }), base);
+  const variants = [
+    { status: "failed" },
+    { image_status: "failed" },
+    { pool_size: 6 },
+    { regenerating: true },
+    { error: "boom" },
+    { image_error: "HTTP 401" },
+  ];
+  const sigs = new Set([base]);
+  for (const v of variants) sigs.add(rowSignature("tenacious", { ...row, ...v }));
+  assert.equal(sigs.size, variants.length + 1);
+  assert.notEqual(rowSignature("frugal", row), base);
+  assert.notEqual(rowSignature("tenacious", undefined), base);
+  assert.equal(rowSignature("tenacious", undefined), rowSignature("tenacious", null));
+  assert.equal(rowSignature("tenacious", { pool: 4 }), rowSignature("tenacious", { pool_size: 4 }));
+});
+
+test("rowSignatures follows the list's words, including words that have no content row yet", () => {
+  const rows = [{ word: "a", status: "ready", pool_size: 5 }, { word: "zz", status: "ready" }];
+  const sigs = rowSignatures(["a", "b"], rows);
+  assert.equal(sigs.length, 2);
+  assert.equal(sigs[0], rowSignature("a", rows[0]));
+  assert.equal(sigs[1], rowSignature("b", undefined));
+  assert.deepEqual(rowSignatures([], rows), []);
+  assert.deepEqual(rowSignatures(undefined, undefined), []);
+  assert.notDeepEqual(rowSignatures(["a", "b"], rows), rowSignatures(["b", "a"], rows));
+});
+
+test("redrawAction redraws on changes, skips identical polls, and waits while focus is inside the rows", () => {
+  const a = rowSignatures(["x", "y"], [{ word: "x", status: "pending" }, { word: "y", status: "ready" }]);
+  const same = rowSignatures(["x", "y"], [{ word: "x", status: "pending" }, { word: "y", status: "ready" }]);
+  const changed = rowSignatures(["x", "y"], [{ word: "x", status: "ready" }, { word: "y", status: "ready" }]);
+  const shorter = rowSignatures(["x"], [{ word: "x", status: "pending" }]);
+  // first draw: nothing on screen yet
+  assert.equal(redrawAction(null, a), "redraw");
+  assert.equal(redrawAction(null, a, { busy: true }), "redraw");
+  // identical data: never rebuild, whatever the focus
+  assert.equal(redrawAction(a, same), "unchanged");
+  assert.equal(redrawAction(a, same, { busy: true }), "unchanged");
+  // changed data: redraw, unless the parent is using a control in the rows (retried on the next poll)
+  assert.equal(redrawAction(a, changed), "redraw");
+  assert.equal(redrawAction(a, changed, { busy: false }), "redraw");
+  assert.equal(redrawAction(a, changed, { busy: true }), "defer");
+  assert.equal(redrawAction(a, shorter), "redraw");
+  assert.equal(redrawAction(a, shorter, { busy: true }), "defer");
+  // the parent's own action (add/remove/retry/regenerate) always redraws
+  assert.equal(redrawAction(a, same, { force: true }), "redraw");
+  assert.equal(redrawAction(a, changed, { force: true, busy: true }), "redraw");
+  // a deferred poll leaves `drawn` untouched, so the next poll still sees the change and redraws once focus is gone
+  assert.equal(redrawAction(a, changed, { busy: true }), "defer");
+  assert.equal(redrawAction(a, changed, { busy: false }), "redraw");
 });

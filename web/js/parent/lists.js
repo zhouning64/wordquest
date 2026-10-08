@@ -17,8 +17,10 @@ import {
   previewHref,
   profilesForList,
   readinessText,
+  redrawAction,
   retryAction,
   rowsByWord,
+  rowSignatures,
   splitEntries,
 } from "./helpers.js";
 import { errorBox, frame, go, queueBanner, reload, showAiOff, showError, stillOn, toastError } from "./shell.js";
@@ -302,20 +304,28 @@ async function renderDetail(root, ctx, id, bandParam) {
   const bannerEl = body.querySelector("#qbanner");
   let rows = [];
   let banner = null;
+  let drawn = null; // signatures of the word rows currently on screen (null until the first draw)
 
-  const drawRows = () => {
+  // The queue poll calls this every few seconds while words are being prepared. The heading and the "x / y ready" chip
+  // are plain text and always refreshed; the word rows (selects, buttons, links) are only rebuilt when their data
+  // changed, and not while the parent is using one of them. `force` is for redraws caused by the parent's own action.
+  const drawRows = ({ force = false } = {}) => {
     const by = rowsByWord(rows);
     headingEl.textContent = `Words (${list.words.length})`;
     readyEl.hidden = !band;
     readyEl.textContent = band ? `${BAND_LABEL[band]}: ${readinessText(list.words, rows)}` : "";
+    const next = rowSignatures(list.words, band ? rows : []);
+    const busy = wordsEl.contains(document.activeElement);
+    if (redrawAction(drawn, next, { force, busy }) !== "redraw") return;
     wordsEl.innerHTML = list.words.map((w) => wordRowHtml(w, band ? by.get(w) : null, band)).join("") || `<p class="muted">This list is empty.</p>`;
+    drawn = next;
   };
-  const loadRows = async () => {
+  const loadRows = async ({ force = false } = {}) => {
     if (band) rows = await fetchContent(id, band);
-    if (stillOn(ctx)) drawRows();
+    if (stillOn(ctx)) drawRows({ force });
   };
   const afterChange = async () => {
-    await loadRows();
+    await loadRows({ force: true });
     if (banner) banner.kick();
   };
 
@@ -388,7 +398,7 @@ async function renderDetail(root, ctx, id, bandParam) {
         const updated = res.list || res;
         list.words = Array.isArray(updated.words) ? updated.words : list.words.filter((w) => w !== word);
         toast(`Removed ${word}`);
-        drawRows();
+        drawRows({ force: true });
       } catch (e) {
         toastError(e);
       }
