@@ -1,0 +1,12 @@
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+
+# Local data and secrets (database, images, logs, generated secret key).
+# Anchored to the repo root so test fixture folders named "data" elsewhere are not ignored.
+/data/
+.env
+
+# Editors
+.idea/

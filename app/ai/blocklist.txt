@@ -1,0 +1,70 @@
+# Kid-safety blocklist (spec §7.5). One lowercase term per line; lines starting with '#' are comments.
+# Matching is whole-token after case-folding and also covers the §7.7 inflections of each entry
+# (e.g. "crap" also blocks "craps", "crapped"), so innocent words that merely contain a term
+# ("class", "assess", "Scunthorpe", "therapist") are never flagged.
+# Derived words that are not inflections ("crappy", "fuckin") need their own line.
+# Deliberately left out because their inflections or other meanings are ordinary vocabulary:
+# heroin (+es = "heroines"), dick, cock, tit, sex, naked, horny, damn, hell, crack, weed, dope, ecstasy, opium.
+
+# profanity
+fuck
+fuckin
+motherfucker
+shit
+shitty
+bullshit
+bitch
+bitchy
+bastard
+ass
+asshole
+jackass
+dumbass
+cunt
+twat
+wank
+wanker
+bollocks
+piss
+crap
+crappy
+goddamn
+cocksucker
+slut
+slutty
+whore
+
+# sexual content
+porn
+porno
+pornography
+pornographic
+sexy
+orgasm
+orgy
+masturbate
+masturbation
+blowjob
+handjob
+dildo
+erotic
+nude
+threesome
+hentai
+milf
+jizz
+boobs
+penis
+vagina
+rape
+rapist
+molest
+prostitute
+
+# drugs
+cocaine
+methamphetamine
+meth
+marijuana
+cannabis
+lsd
