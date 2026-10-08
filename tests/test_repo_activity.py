@@ -380,3 +380,21 @@ def test_import_with_duplicate_event_ids_is_a_value_error(repo, tmp_path):
         target.import_all(data)
     assert [p.id for p in target.list_profiles()] == ["keep"]
     target.close()
+
+
+@pytest.mark.parametrize("collection", [
+    "profiles", "lists", "contents", "questions", "progress", "sessions", "events",
+])
+def test_import_rejects_a_duplicate_primary_key_in_every_collection(repo, tmp_path, collection):
+    populate(repo)
+    data = json.loads(json.dumps(repo.export_all()))
+    data[collection].append(dict(data[collection][0]))  # a second record with the same primary key
+    target = SqliteRepository(tmp_path / "target.db")
+    target.save_profile(Profile(id="keep", name="Keep", band="6-8"))
+    target.enqueue_job("learn", "6-8", "keep", 1, [])
+    before = target.export_all()
+    with pytest.raises(ValueError, match=f"conflicting records: duplicate {collection} "):
+        target.import_all(data)
+    assert target.export_all() == before  # nothing deleted, nothing written
+    assert target.job_counts()["pending"] == 1
+    target.close()

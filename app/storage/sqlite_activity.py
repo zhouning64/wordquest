@@ -288,6 +288,21 @@ class ActivityMixin:
         progress = [WordProgress.model_validate(x) for x in data["progress"]]
         sessions = [Session.model_validate(x) for x in data["sessions"]]
         events = [AnswerEvent.model_validate(x) for x in data["events"]]
+        # A repeated primary key is a conflict, not a merge: the upserts below would silently keep one copy.
+        for name, keys in (
+            ("profiles", [p.id for p in profiles]),
+            ("lists", [wl.id for wl in lists]),
+            ("contents", [c.key for c in contents]),
+            ("questions", [q.id for q in questions]),
+            ("progress", [wp.key for wp in progress]),
+            ("sessions", [s.id for s in sessions]),
+            ("events", [e.client_event_id for e in events]),
+        ):
+            seen: set[str] = set()
+            for key in keys:
+                if key in seen:
+                    raise ValueError(f"backup has conflicting records: duplicate {name} {key!r}")
+                seen.add(key)
         try:
             with self._tx() as conn:
                 for table in BACKUP_COLLECTIONS + ("jobs",):
@@ -306,5 +321,5 @@ class ActivityMixin:
                     self._put_session(conn, s)
                 for e in events:
                     self._put_event(conn, e)
-        except sqlite3.IntegrityError as exc:  # e.g. the same client_event_id twice
+        except sqlite3.IntegrityError as exc:  # not expected: duplicate keys are rejected above
             raise ValueError(f"backup has conflicting records: {exc}") from exc
