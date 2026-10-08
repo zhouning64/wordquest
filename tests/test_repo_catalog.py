@@ -201,6 +201,55 @@ def test_write_transactions_are_serialized(repo):
     assert repo.get_list("l-other") is not None
 
 
+def test_connections_of_exited_threads_are_closed_and_dropped(repo):
+    repo.save_profile(make_profile("p1"))  # the main thread holds one connection
+    conns: list[sqlite3.Connection] = []
+    results: list[object] = []
+
+    def read() -> None:
+        conns.append(repo._conn())
+        results.append(repo.get_profile("p1"))
+
+    for _ in range(20):  # sequential short-lived threads, like anyio's worker turnover
+        t = threading.Thread(target=read)
+        t.start()
+        t.join()
+    assert len(results) == 20 and all(r is not None for r in results)
+    # the main thread (1 live user) + the last exited thread's connection, not yet pruned
+    assert len(repo._conns) <= 2
+    for c in conns[:-1]:  # every exited thread but the last has had its connection closed
+        with pytest.raises(sqlite3.ProgrammingError):
+            c.execute("SELECT 1")
+    assert repo.get_profile("p1") is not None
+    repo.save_profile(make_profile("p2"))
+    assert repo.get_profile("p2") is not None
+
+
+def test_close_closes_connections_held_by_threads_still_alive(repo):
+    main_conn = repo._conn()
+    held: list[sqlite3.Connection] = []
+    ready = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        held.append(repo._conn())
+        ready.set()
+        release.wait(timeout=10)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    try:
+        assert ready.wait(timeout=10)
+        repo.close()
+        for c in (main_conn, held[0]):
+            with pytest.raises(sqlite3.ProgrammingError):
+                c.execute("SELECT 1")
+        assert len(repo._conns) == 0
+    finally:
+        release.set()
+        t.join(timeout=10)
+
+
 # ---- profiles -------------------------------------------------------------------------------
 
 def test_profile_round_trip_and_missing(repo):

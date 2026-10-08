@@ -65,7 +65,8 @@ class SqliteDB:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
-        self._conns: list[sqlite3.Connection] = []
+        # thread ident -> (owning thread, its connection); guarded by _conns_lock
+        self._conns: dict[int, tuple[threading.Thread, sqlite3.Connection]] = {}
         self._conns_lock = threading.Lock()
         self._init_schema()
 
@@ -74,8 +75,8 @@ class SqliteDB:
         """This thread's connection (opened on first use)."""
         conn = getattr(self._local, "conn", None)
         if conn is None:
-            # check_same_thread=False only so close() can close every thread's connection;
-            # each connection is still used by exactly one thread.
+            # check_same_thread=False only so close() and _drop_exited_threads() can close connections
+            # owned by other threads; each connection is still used by exactly one thread.
             conn = sqlite3.connect(
                 str(self.db_path), timeout=5.0, isolation_level=None, check_same_thread=False
             )
@@ -85,14 +86,27 @@ class SqliteDB:
             self._local.conn = conn
             self._local.depth = 0
             with self._conns_lock:
-                self._conns.append(conn)
+                self._drop_exited_threads()
+                self._conns[threading.get_ident()] = (threading.current_thread(), conn)
         return conn
+
+    def _drop_exited_threads(self) -> None:
+        """Close and forget the connections of threads that have exited (caller holds _conns_lock).
+
+        A dead thread can no longer use its connection, and its thread-local storage is gone with it,
+        so closing it here is safe. Without this, a server whose worker threads come and go would keep
+        one open connection per thread it ever ran on.
+        """
+        for ident, (thread, conn) in list(self._conns.items()):
+            if not thread.is_alive():
+                del self._conns[ident]
+                conn.close()
 
     def close(self) -> None:
         """Close every connection opened by this object (used by tests and app shutdown)."""
         with self._conns_lock:
-            conns, self._conns = self._conns, []
-        for conn in conns:
+            entries, self._conns = self._conns, {}
+        for _thread, conn in entries.values():
             conn.close()
         self._local = threading.local()
 
