@@ -1118,6 +1118,11 @@ def test_q5_near_copy_skips_legacy_questions():
         # round 4: the scan now stops at ",", so a second, bare ordinal ("the second") blocks the repair instead
         "The first choice fits, but the second does not.",
         "Sentence 1 fits, but not the last.",
+        "The first choice fits; the third one is about a bus.",
+        # fix round 1: a comma or colon right after the reference opens an inserted phrase, not a new clause
+        "Sentence 2, however, does not show saving.",
+        "The first sentence, about Ben, isn't right.",
+        "Option C, the bus one, is not correct.",
     ],
 )
 def test_q9_more_positional_shapes_and_negated_references_are_rejected(explanation):
@@ -1137,6 +1142,11 @@ def test_q9_more_positional_shapes_and_negated_references_are_rejected(explanati
         ("Sentence 2 shows frugal: Ben doesn't buy what he won't use.",
          "The correct sentence shows frugal: Ben doesn't buy what he won't use."),
         ("The first choice fits, since Ben never wastes money.", "The correct choice fits, since Ben never wastes money."),
+        # fix round 1: an ordinal in the scene ("the last of", "the first to") is not a choice reference
+        ("The first sentence shows Maya saved the last of her pay.",
+         "The correct sentence shows Maya saved the last of her pay."),
+        ("Sentence 1 shows Ben was the first to save.", "The correct sentence shows Ben was the first to save."),
+        ("The first choice shows saving for the second time.", "The correct choice shows saving for the second time."),
     ],
 )
 def test_q9_more_positional_shapes_are_repaired(explanation, repaired):

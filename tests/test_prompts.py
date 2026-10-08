@@ -50,7 +50,7 @@ def test_band_guide_covers_every_band_with_limits_and_settings():
     for phrase in ("history, literature, science, jobs, school debate club",
                    "no elections, voting, protests or political causes",
                    "Never open a sentence with a time or place phrase", "Every factual claim must be true",
-                   "no death tolls or disasters"):
+                   "when you mention a real event, leave out death tolls and disasters"):
         assert phrase in BAND_GUIDE["9-12"], phrase
     assert "current events" not in BAND_GUIDE["9-12"]
     # round 4: "starts with a person or thing" made every sentence open the same way
@@ -105,13 +105,17 @@ def test_learn_card_prompt_contents(band):
     # and a phrase's wrong_use is wrong under every meaning of the whole phrase
     for phrase in ("only senses found in a standard learner's dictionary", "never an invented noun use of an adjective",
                    "Every form is a real, correctly spelled dictionary word",
-                   'Use "" for a phrase', 'every part you name must be visible in the spelling of "frugal"',
-                   "for a phrase, every meaning of the whole phrase"):
+                   'Use "" for a phrase', "for a phrase, every meaning of the whole phrase"):
         assert phrase in user, phrase
+    # fix round 1: name each part as it is spelled in the word; the source word goes inside the parentheses
+    for phrase in ('Write each part exactly as it is spelled in "frugal"',
+                   "put its real source word and that word's dictionary meaning inside the parentheses"):
+        assert phrase in user, phrase
+    assert "Name the real source word" not in user
     # wrong_use, word_parts, memory_hook, comparatives (round 3)
     for phrase in ("a look-alike or a near-meaning word",
                    "the subject is an object, animal or weather", "the action fails", 'this sentence needs "<other word>"',
-                   '"<part> (<meaning>) + <part> (<meaning>) = <combined meaning>"', "Name the real source word",
+                   '"<part> (<meaning>) + <part> (<meaning>) = <combined meaning>"',
                    "never guess a root's meaning from a modern English word", "with certainty, use \"\"",
                    "use a root only if it is the one in word_parts", 'Use "more/most frugal" only when two or more things'):
         assert phrase in user, phrase
@@ -183,7 +187,7 @@ def test_question_batch_prompt_contents():
     # the rules
     for rule in ("exactly one defensible answer", "Ask only about the card's senses", "(means: <short meaning>)",
                  "copied exactly from the card's synonyms", "copied exactly from the card's antonyms",
-                 "every choice contains the word", "exactly one ___", "160 characters", "plausible",
+                 "every choice contains the word", "exactly one ___", "160 characters",
                  "never write that hint yourself", "fit this word and no other",
                  "synonym with the same first letter would also fit", "at most 6 plain words",
                  "never refer to a letter or position",
@@ -191,22 +195,40 @@ def test_question_batch_prompt_contents():
                  "Never copy the examples in these instructions"):
         assert rule in system, rule
     # round 3: fill_blank, scenario stems, comparatives
-    for rule in ("Choose the three wrong choices first", "states the meaning in other plain words",
-                 "makes the sentence false or silly", "Naming an activity is not a clue",
-                 "a feeling, manner or action that could also describe the person or scene",
-                 "a noun goes in a noun slot", "a verb keeps its preposition",
+    for rule in ("Choose the three wrong choices first", "a noun goes in a noun slot", "a verb keeps its preposition",
                  '"Which of these would you call <word>?" only for a noun or adjective',
                  "ask which sentence or situation shows it", 'Use "more/most <word>" only when two or more things'):
         assert rule in system, rule
-    # round 4 (Qwen): wrong choices must tempt a student who half-knows the word; spell_it states the Q13 rule
-    for rule in ("tempt a student who half-knows the word", "same part of speech, length and style",
-                 "same topic or situation as the correct choice", "words this band knows",
-                 "never nonsense, joke or obviously unrelated choices",
-                 "realistic misuse (the word put where a look-alike or near-meaning word belongs, never nonsense)",
-                 "without using the definition's words or a synonym", "the wrong choices are situations in the same setting",
-                 "real words from the same topic", "the correct choice is never the odd one out",
-                 "No word in the cue that has 4 or more letters may start with the answer's first letter"):
-        assert rule in system, rule
+    # round 4 (Qwen): spell_it states the Q13 rule
+    assert "No word in the cue that has 4 or more letters may start with the answer's first letter" in system
+    # fix round 1 (live run: 115 questions "too easy"): one near-miss recipe, referenced by each type
+    near_miss = next(l for l in system.splitlines() if l.startswith("- Wrong choices"))
+    for rule in ("near misses that tempt a student who half-knows the word", "same part of speech, length and style",
+                 "words this band knows", "the same family and tone as the correct choice",
+                 "For a feeling word, other feelings of the same kind (for a bad mood: worried, bored, sad; never "
+                 "happy or excited)", "for an action word, other actions that could happen in the same place",
+                 "for a describing word, other words that describe the same kind of thing",
+                 "Each wrong choice is ruled out by one specific detail in the question",
+                 "never nonsense, joke or obviously unrelated choices"):
+        assert rule in near_miss, rule
+    lines = {t: next(l for l in system.splitlines() if l.startswith(f"- {t}:")) for t in MIX}
+    for qtype in ("meaning", "pick_word", "fill_blank", "usage", "scenario", "synonym", "antonym", "word_parts"):
+        assert "near miss" in lines[qtype], qtype
+    for rule in ("its situation makes only the word fit", "one detail rules out each wrong choice",
+                 "Never put the meaning or a definition in the sentence or in parentheses",
+                 'only spell_it has a "(means: ...)" cue', "the finished sentence is grammatical"):
+        assert rule in lines["fill_blank"], rule
+    assert "the word put where a look-alike or near-meaning word belongs" in lines["usage"]
+    assert "never attached to a thing it cannot describe at all" in lines["usage"]
+    assert "a related but different behaviour, never the opposite behaviour" in lines["scenario"]
+    assert "without using the definition's words or a synonym" in lines["scenario"]
+    assert "the correct choice is never the odd one out" in lines["antonym"]
+    # gone: the meaning clue in fill_blank, the "not a feeling that could describe the person" rule (it pushed the
+    # writer to unrelated choices), and the replacement-pair recipe that modelled nonsense misuses
+    for old in ("states the meaning in other plain words", "makes the sentence false or silly",
+                "could also describe the person or scene", "cannot stand in for each other",
+                "For a word about replacing something", "real words from the same topic"):
+        assert old not in system, old
     for qtype in MIX:
         assert f"- {qtype}:" in system
     assert 'spelled correctly every time, with no added hyphens, spaces or capital letters' in user
@@ -243,8 +265,10 @@ def test_check_prompt_shows_only_what_the_learner_sees():
     for field in ("passes", "tempting", "chosen_index", "fill", "alternatives", "ambiguous", "reason"):
         assert field in system, field
     for rule in ("tempting = one true or false per choice, in order", "rate every choice, including your answer",
-                 "a learner in the stated grades who only half-knows the tested word could reasonably pick it",
-                 "false if it is nonsense, a joke or obviously unrelated", "tempting = []"):
+                 "true if a learner in the stated grades who only half-knows the tested word might pick it",
+                 "the same family or tone as the right answer, or it fits most of the sentence",
+                 "false only if it clearly does not belong (a different kind of word or situation, the opposite "
+                 "tone, or nonsense)", "tempting = []"):
         assert rule in system, rule
     assert "-1" in system
     for rule in ("test EACH choice on its own", "one true or false per choice, in order",

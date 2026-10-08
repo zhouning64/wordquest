@@ -309,10 +309,19 @@ _POSITION_FIXABLE = re.compile(
 # choice…"): rewriting it as "the correct sentence" would make the explanation false, so it is left for Q9.
 _NEGATION = re.compile(r"(?i:\b(?:not|never|cannot)\b|n['’]t\b)")
 # Where the negation scan after the reference stops: the sentence end, or "because", ":" or "," (what follows is
-# about the scene, as in "The first sentence is right because Ava does not waste food.").
+# about the scene, as in "The first sentence is right because Ava does not waste food."). A "," or ":" right after
+# the reference opens an inserted phrase ("Sentence 2, however, does not…"), so then only _SENTENCE_STOP ends it.
 _SCAN_STOP = re.compile(r"[.!?,:]|(?i:\bbecause\b)")
-# A bare ordinal left elsewhere in the explanation ("…, but the second does not") still points at a choice.
-_BARE_ORDINAL = re.compile(r"(?i:\bthe\s+(?:first|second|third|fourth|last)\b)")
+_SENTENCE_STOP = re.compile(r"[.!?]|(?i:\bbecause\b)")
+# An ordinal used like a pronoun elsewhere in the explanation ("…, but the second does not", "not the last.") still
+# points at a choice: it is followed by "one", a verb, a conjunction, punctuation or the end. "the last of her pay",
+# "the first to save" and "the second time" are about the scene.
+_ORDINAL_PRONOUN = re.compile(
+    r"(?i:\bthe\s+(?:first|second|third|fourth|last)\b(?=\s*(?:$|[^\w\s]|(?:"
+    r"ones?|and|or|but|is|was|are|were|does|did|do|has|have|had|can|could|would|will|won|should|may|might|must|"
+    r"cannot|shows?|uses?|means?|fits?|says?|describes?|match(?:es)?|gives?|tells?|talks?|names?|needs?|puts?|"
+    r"makes?|misuses?)(?:n['’]t)?\b)))"
+)
 _LEADING_NOT = re.compile(r"\s*Not\b")
 # A spell_it prompt ending in a parenthetical cue without the "means:" label ("(makes trouble smaller)").
 _BARE_CUE = re.compile(r"\((?!\s*means\s*:)\s*(?P<body>[^()_]*[^\s()_])\s*\)\s*\.?\s*$", re.IGNORECASE)
@@ -351,24 +360,26 @@ def _the_correct(m: re.Match[str]) -> str:
 
 def _negated(text: str, start: int, end: int) -> bool:
     """True if text starts with "Not" or the sentence holding text[start:end] has a negation before the next
-    "because", ":" or "," (or the sentence end)."""
+    "because", ":" or "," (or the sentence end); a "," or ":" right after the reference does not end the scan."""
     if _LEADING_NOT.match(text):
         return True
     begin = max(text.rfind(mark, 0, start) for mark in ".!?") + 1
     stop = _SCAN_STOP.search(text, end)
+    if stop and stop.group() in ",:" and not text[end : stop.start()].strip():
+        stop = _SENTENCE_STOP.search(text, stop.end())
     return bool(_NEGATION.search(text[begin : stop.start() if stop else len(text)]))
 
 
 def _repair_position(explanation: str) -> str:
     """Rewrite an explanation's one reference to a choice by position as "the correct sentence" (etc.). Left
-    unchanged, for Q9 to reject, when there are several references (a bare "the second" counts), it points at a
-    wrong choice, it is negated, or the result would be too long."""
+    unchanged, for Q9 to reject, when there are several references (an ordinal used like a pronoun, "the second
+    does not", counts), it points at a wrong choice, it is negated, or the result would be too long."""
     if sum(1 for _ in _POSITION_REF.finditer(explanation)) != 1:
         return explanation
     m = _POSITION_FIXABLE.search(explanation)
     if m is None or _negated(explanation, m.start(), m.end()):
         return explanation
-    if _BARE_ORDINAL.search(explanation[: m.start()] + " " + explanation[m.end() :]):
+    if _ORDINAL_PRONOUN.search(explanation[: m.start()] + " " + explanation[m.end() :]):
         return explanation
     fixed = explanation[: m.start()] + _the_correct(m) + explanation[m.end() :]
     return fixed if len(fixed) <= EXPLANATION_MAX else explanation
