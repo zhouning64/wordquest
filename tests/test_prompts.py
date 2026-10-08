@@ -48,11 +48,14 @@ def test_band_guide_covers_every_band_with_limits_and_settings():
     assert 'never "kid"' in BAND_GUIDE["9-12"] and "invented person" in BAND_GUIDE["9-12"]
     assert 'never "kid"' not in BAND_GUIDE["3-5"]
     for phrase in ("history, literature, science, jobs, school debate club",
-                   "no elections, voting, protests or political causes", "never with a setting phrase",
-                   "only if every fact in the sentence is true", "no death tolls or disasters"):
+                   "no elections, voting, protests or political causes",
+                   "Never open a sentence with a time or place phrase", "Every factual claim must be true",
+                   "no death tolls or disasters"):
         assert phrase in BAND_GUIDE["9-12"], phrase
     assert "current events" not in BAND_GUIDE["9-12"]
-    assert "setting phrase" not in BAND_GUIDE["3-5"] + BAND_GUIDE["6-8"]
+    # round 4: "starts with a person or thing" made every sentence open the same way
+    assert "person or thing" not in BAND_GUIDE["9-12"] and "setting phrase" not in BAND_GUIDE["9-12"]
+    assert "time or place phrase" not in BAND_GUIDE["3-5"] + BAND_GUIDE["6-8"]
 
 
 # Concrete content the model copied from earlier prompts (scenes, sample words, sample sentences).
@@ -62,6 +65,7 @@ REMOVED = (
     "militate", "tenacious", "ephemeral", "steady", "frugal", "Maya was ___", "benevolent", "giant + -ic",
     "massive / tiny", "braved", "careful with money", "candidly",
     "chemical spill", "spill", "flames",  # fix round 1: the model copied "Priya ___ the chemical spill"
+    "advocated", "kitchen", "come to terms",  # round 4: the review's examples stay out of the prompts
 )
 
 
@@ -71,7 +75,7 @@ def test_prompts_no_longer_carry_copyable_content_examples(band):
                                    "senses": [], "synonyms": ["zeal"], "antonyms": [], "word_parts": "",
                                    "forms": [], "right_use": RightUse(), "wrong_use": WrongUse()})
     texts = [*learn_card_prompt("zest", band), *question_batch_prompt("zest", band, card, MIX, [])]
-    texts += check_prompt([{"qid": "q1", "type": "meaning", "prompt": "What does zest mean?", "choices": []}])
+    texts += check_prompt([{"qid": "q1", "type": "meaning", "prompt": "What does zest mean?", "choices": []}], band)
     for text in texts:
         for phrase in REMOVED:
             assert phrase not in text, phrase
@@ -97,6 +101,13 @@ def test_learn_card_prompt_contents(band):
                    "the inflections and derived words of the senses you give"):
         assert phrase in user, phrase
     assert "needs its own sense" not in user
+    # round 4 (Qwen): dictionary senses and real forms only, no word parts for phrases or invisible parts,
+    # and a phrase's wrong_use is wrong under every meaning of the whole phrase
+    for phrase in ("only senses found in a standard learner's dictionary", "never an invented noun use of an adjective",
+                   "Every form is a real, correctly spelled dictionary word",
+                   'Use "" for a phrase', 'every part you name must be visible in the spelling of "frugal"',
+                   "for a phrase, every meaning of the whole phrase"):
+        assert phrase in user, phrase
     # wrong_use, word_parts, memory_hook, comparatives (round 3)
     for phrase in ("a look-alike or a near-meaning word",
                    "the subject is an object, animal or weather", "the action fails", 'this sentence needs "<other word>"',
@@ -187,6 +198,15 @@ def test_question_batch_prompt_contents():
                  '"Which of these would you call <word>?" only for a noun or adjective',
                  "ask which sentence or situation shows it", 'Use "more/most <word>" only when two or more things'):
         assert rule in system, rule
+    # round 4 (Qwen): wrong choices must tempt a student who half-knows the word; spell_it states the Q13 rule
+    for rule in ("tempt a student who half-knows the word", "same part of speech, length and style",
+                 "same topic or situation as the correct choice", "words this band knows",
+                 "never nonsense, joke or obviously unrelated choices",
+                 "realistic misuse (the word put where a look-alike or near-meaning word belongs, never nonsense)",
+                 "without using the definition's words or a synonym", "the wrong choices are situations in the same setting",
+                 "real words from the same topic", "the correct choice is never the odd one out",
+                 "No word in the cue that has 4 or more letters may start with the answer's first letter"):
+        assert rule in system, rule
     for qtype in MIX:
         assert f"- {qtype}:" in system
     assert 'spelled correctly every time, with no added hyphens, spaces or capital letters' in user
@@ -215,12 +235,17 @@ def test_check_prompt_shows_only_what_the_learner_sees():
         {"qid": "q2", "type": "spell_it", "prompt": "Mom stays ___ by using coupons. (means: careful with money)",
          "choices": []},
     ]
-    system, user = check_prompt(items)
-    lines = user.splitlines()[1:]
+    system, user = check_prompt(items, "6-8")
+    assert user.splitlines()[:2] == ["Learners are in grades 6-8.", "Questions (one JSON object per line):"]
+    lines = user.splitlines()[2:]
     assert [json.loads(line) for line in lines] == items
     assert "independently" in system
-    for field in ("passes", "chosen_index", "fill", "alternatives", "ambiguous", "reason"):
+    for field in ("passes", "tempting", "chosen_index", "fill", "alternatives", "ambiguous", "reason"):
         assert field in system, field
+    for rule in ("tempting = one true or false per choice, in order", "rate every choice, including your answer",
+                 "a learner in the stated grades who only half-knows the tested word could reasonably pick it",
+                 "false if it is nonsense, a joke or obviously unrelated", "tempting = []"):
+        assert rule in system, rule
     assert "-1" in system
     for rule in ("test EACH choice on its own", "one true or false per choice, in order",
                  "a careful teacher would mark that choice right, even when another choice is better",
@@ -240,8 +265,9 @@ def test_check_prompt_strips_answer_keys_even_if_passed():
     leaky = {"qid": "q7", "type": "synonym", "prompt": "Closest in meaning to \"frugal\"?",
              "choices": ["thrifty", "noisy", "brave", "sleepy"], "answer_index": 0,
              "accepted_answers": [], "explanation": "Thrifty people save money.", "word": "frugal"}
-    system, user = check_prompt([leaky])
-    payload = json.loads(user.splitlines()[1])
+    system, user = check_prompt([leaky], "9-12")
+    assert user.splitlines()[0] == "Learners are in grades 9-12."
+    payload = json.loads(user.splitlines()[2])
     assert payload == {"qid": "q7", "type": "synonym", "prompt": "Closest in meaning to \"frugal\"?",
                        "choices": ["thrifty", "noisy", "brave", "sleepy"]}
     assert "Thrifty people save money." not in user

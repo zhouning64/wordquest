@@ -316,12 +316,31 @@ def test_main_passes_reasoning_effort_to_the_generator_and_shows_it_in_the_heade
     assert text.splitlines()[0] == "Model fake-model · band 6-8 · reasoning medium · words: tenacious"
 
 
-def test_main_without_reasoning_effort_passes_none_and_omits_it_from_the_header(tmp_path, monkeypatch):
+def test_main_without_the_flag_uses_the_configured_reasoning_effort(tmp_path, monkeypatch):
     smoke = load_smoke()
     code, text = run_main(smoke, monkeypatch, tmp_path, StubGenerator(fail_words=set()), ["tenacious"])
     assert code == 0
+    assert generator_kwargs[0]["generation_reasoning_effort"] == "medium"  # the LLM_REASONING_EFFORT default
+    assert text.splitlines()[0] == "Model fake-model · band 6-8 · reasoning medium · words: tenacious"
+
+
+def test_main_with_an_empty_configured_effort_passes_none_and_says_model_default(tmp_path, monkeypatch):
+    smoke = load_smoke()
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "")
+    code, text = run_main(smoke, monkeypatch, tmp_path, StubGenerator(fail_words=set()), ["tenacious"])
+    assert code == 0
     assert generator_kwargs[0]["generation_reasoning_effort"] is None
-    assert text.splitlines()[0] == "Model fake-model · band 6-8 · words: tenacious"
+    assert text.splitlines()[0] == "Model fake-model · band 6-8 · reasoning model default · words: tenacious"
+
+
+def test_the_flag_overrides_the_configured_reasoning_effort(tmp_path, monkeypatch):
+    smoke = load_smoke()
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "low")
+    code, text = run_main(smoke, monkeypatch, tmp_path, StubGenerator(fail_words=set()),
+                          ["--reasoning-effort", "high", "tenacious"])
+    assert code == 0
+    assert generator_kwargs[0]["generation_reasoning_effort"] == "high"
+    assert text.splitlines()[0] == "Model fake-model · band 6-8 · reasoning high · words: tenacious"
 
 
 def test_main_rejects_an_unknown_reasoning_effort(tmp_path, monkeypatch):

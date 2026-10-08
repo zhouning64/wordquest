@@ -140,11 +140,14 @@ def rq(qtype: str, **over: object) -> dict:
 
 
 def ok(qid: str, chosen_index: int = -1, fill: str = "", *, passes: list[bool] | None = None,
-       alternatives: list[str] | None = None, ambiguous: bool = False) -> dict:
-    """A check result. By default only choice chosen_index passes (spell_it: passes = [] and no alternatives)."""
+       tempting: list[bool] | None = None, alternatives: list[str] | None = None, ambiguous: bool = False) -> dict:
+    """A check result. By default only choice chosen_index passes and every choice is tempting (spell_it: passes =
+    tempting = [] and no alternatives)."""
     if passes is None:
         passes = [] if chosen_index < 0 else [i == chosen_index for i in range(4)]
-    return {"qid": qid, "passes": passes, "chosen_index": chosen_index, "fill": fill,
+    if tempting is None:
+        tempting = [] if chosen_index < 0 else [True] * 4
+    return {"qid": qid, "passes": passes, "tempting": tempting, "chosen_index": chosen_index, "fill": fill,
             "alternatives": list(alternatives or []), "ambiguous": ambiguous, "reason": "clear"}
 
 
@@ -230,6 +233,34 @@ async def test_make_card_unparseable_raises_and_logs(logs):
         await gen(llm, logs).make_card(WORD, BAND)
     lines = read_jsonl(logs[2])
     assert len(lines) == 1 and lines[0]["kind"] == "learn_card" and lines[0]["raw"] == bad
+
+
+@pytest.mark.parametrize(
+    "word, over",
+    [
+        (WORD, {"word_parts": "frux (fruit) + -al (like) = getting full value"}),  # "frux" is not in "frugal"
+        ("in lieu of", {  # a phrase never gets word parts
+            "pos": "preposition", "forms": [], "word_parts": "lieu (place) + of (from) = in place of",
+            "senses": [{"pos": "preposition", "definition": "instead of", "example": "We had soup in lieu of salad."}],
+            "examples": ["Ben used a pencil in lieu of a pen.", "Maya rode a bike in lieu of the bus.",
+                         "In lieu of a party, we had a picnic.", "Leo got a game in lieu of a book."],
+            "right_use": {"sentence": "We drank water in lieu of juice."},
+            "wrong_use": {"sentence": "The in lieu of dog barked.", "why": "It means instead of; this sentence needs \"noisy\"."},
+        }),
+    ],
+)
+async def test_emptied_word_parts_swap_the_word_parts_slot_and_drop_word_parts_questions(logs, word, over):
+    llm = FakeLLM({LEARN_CARD: [card_dict(**over)]})
+    card = await gen(llm, logs).make_card(word, BAND)
+    assert card.word_parts == ""
+    mix = initial_mix(card)
+    assert "word_parts" not in mix and mix["spell_it"] == INITIAL_MIX["spell_it"] + 1
+    # a word_parts question the model writes anyway is dropped before the check (no ANSWER_CHECK is scripted)
+    llm.add(QUESTION_BATCH, {"questions": [rq("word_parts")]})
+    assert await gen(llm, logs).make_questions(word, BAND, card, {"word_parts": 1}, [], 1) == []
+    rej = read_jsonl(logs[2])
+    assert [(r["kind"], r["errors"]) for r in rej] == [
+        ("question", ["Q4: word_parts question but the card has no word parts"])]
 
 
 async def test_make_card_llm_errors_propagate(logs):
@@ -409,6 +440,55 @@ async def test_choice_question_is_kept_only_when_exactly_the_key_passes(logs, pa
     assert rej[0]["raw"]["results"] == [result]
 
 
+@pytest.mark.parametrize(
+    "tempting, reason",
+    [
+        ([True, True, True, True], None),
+        ([False, True, True, False], None),  # 2 of the 3 wrong choices tempt; the key's own rating is ignored
+        ([True, False, True, True], None),
+        ([True, True, False, False], "check: too easy (1 of 3 wrong choices tempting)"),  # the key does not count
+        ([False, False, False, True], "check: too easy (1 of 3 wrong choices tempting)"),
+        ([True, False, False, False], "check: too easy (0 of 3 wrong choices tempting)"),
+        ([True, True, True], "check: 3 tempting for 4 choices"),
+        ([True, True, True, True, True], "check: 5 tempting for 4 choices"),
+        ([], "check: 0 tempting for 4 choices"),
+    ],
+)
+async def test_choice_question_needs_at_least_two_tempting_wrong_choices(logs, tempting, reason):
+    question = rq("meaning")  # the key is choice 0
+    result = ok("q1", 0, tempting=tempting)
+    qs, rej = await run_check(logs, question, result)
+    if reason is None:
+        assert [q.type for q in qs] == ["meaning"] and rej == []
+        return
+    assert qs == []
+    assert [(r["kind"], r["errors"]) for r in rej] == [("question_check", [reason])]
+    assert rej[0]["raw"]["results"] == [result]
+
+
+async def test_a_wrong_answer_is_reported_before_too_easy(logs):
+    qs, rej = await run_check(logs, rq("synonym"), ok("q1", 1, passes=[True, True, False, False],
+                                                        tempting=[False, False, False, False]))
+    assert qs == [] and rej[0]["errors"] == ["check: 2 choices pass"]
+
+
+@pytest.mark.parametrize("tempting", [[], [True, False], [False]])
+async def test_spell_it_ignores_tempting(logs, tempting):
+    qs, rej = await run_check(logs, rq("spell_it"), ok("q1", fill="frugal", tempting=tempting))
+    assert [q.type for q in qs] == ["spell_it"] and rej == []
+
+
+@pytest.mark.parametrize("band, grades", [("3-5", "grades 3-5"), ("6-8", "grades 6-8"), ("9-12", "grades 9-12")])
+async def test_the_blind_check_is_told_the_learners_band_but_nothing_about_the_answer(logs, band, grades):
+    llm = FakeLLM({QUESTION_BATCH: [{"questions": [rq("synonym")]}], ANSWER_CHECK: [{"results": [ok("q1", 1)]}]})
+    qs = await gen(llm, logs).make_questions(WORD, band, make_card(), {"synonym": 1}, [], 1)
+    assert len(qs) == 1
+    user = llm.calls[1]["user"]
+    assert user.splitlines()[0] == f"Learners are in {grades}."
+    assert "thrifty" in user  # the choices are shown (the checker rates every one)...
+    assert '"answer_index"' not in user and "careful not to waste money or things" not in user  # ...the key is not
+
+
 async def test_ambiguous_still_drops_a_choice_question_whose_key_alone_passes(logs):
     qs, rej = await run_check(logs, rq("synonym"), ok("q1", 1, ambiguous=True))
     assert qs == [] and rej[0]["errors"] == ["check: ambiguous"]
@@ -530,9 +610,9 @@ async def test_check_items_never_contain_answers(logs, monkeypatch):
     seen: list[list[dict]] = []
     real_check_prompt = content_mod.check_prompt
 
-    def spy(items: list[dict]) -> tuple[str, str]:
+    def spy(items: list[dict], band: str) -> tuple[str, str]:
         seen.append(items)
-        return real_check_prompt(items)
+        return real_check_prompt(items, band)
 
     monkeypatch.setattr(content_mod, "check_prompt", spy)
     card = make_card()
@@ -567,7 +647,7 @@ async def test_blind_check_and_stored_question_get_the_spell_it_letter_hint(logs
                    ANSWER_CHECK: [{"results": [ok("q1", fill="frugal")]}]})
     qs = await gen(llm, logs).make_questions(WORD, BAND, make_card(), {"spell_it": 1}, [], 1)
     assert [q.prompt for q in qs] == [hinted]
-    assert json.loads(llm.calls[1]["user"].splitlines()[1])["prompt"] == hinted
+    assert json.loads(llm.calls[1]["user"].splitlines()[2])["prompt"] == hinted  # after the band and header lines
 
 
 async def test_existing_prompts_are_sent_and_repeats_dropped(logs, monkeypatch):

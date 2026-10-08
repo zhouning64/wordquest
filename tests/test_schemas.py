@@ -85,9 +85,11 @@ def test_question_batch_schema_shape():
 def test_answer_check_schema_shape():
     assert list(ANSWER_CHECK_SCHEMA["properties"]) == ["results"]
     item = ANSWER_CHECK_SCHEMA["properties"]["results"]["items"]
-    assert list(item["properties"]) == ["qid", "passes", "chosen_index", "fill", "alternatives", "ambiguous", "reason"]
+    assert list(item["properties"]) == ["qid", "passes", "tempting", "chosen_index", "fill", "alternatives",
+                                        "ambiguous", "reason"]
     assert set(item["properties"]) == set(CheckResult.model_fields)
     assert item["properties"]["passes"] == {"type": "array", "items": {"type": "boolean"}}
+    assert item["properties"]["tempting"] == {"type": "array", "items": {"type": "boolean"}}
     assert item["properties"]["alternatives"] == {"type": "array", "items": {"type": "string"}}
     assert item["properties"]["ambiguous"] == {"type": "boolean"}
     assert item["properties"]["chosen_index"]["enum"] == [-1, 0, 1, 2, 3]
@@ -174,18 +176,19 @@ def test_parse_questions_invalid(bad):
         parse_questions(bad)
 
 
-CHECK = {"qid": "q1", "passes": [False, False, True, False], "chosen_index": 2, "fill": "", "alternatives": [],
-         "ambiguous": False, "reason": "clear"}
+CHECK = {"qid": "q1", "passes": [False, False, True, False], "tempting": [True, False, True, True], "chosen_index": 2,
+         "fill": "", "alternatives": [], "ambiguous": False, "reason": "clear"}
 
 
 def test_parse_check_valid():
-    spell = {**CHECK, "qid": "q2", "passes": [], "chosen_index": -1, "fill": "huge", "alternatives": ["giant"]}
+    spell = {**CHECK, "qid": "q2", "passes": [], "tempting": [], "chosen_index": -1, "fill": "huge",
+             "alternatives": ["giant"]}
     results = parse_check({"results": [CHECK, spell]})
     assert results == [
-        CheckResult(qid="q1", passes=[False, False, True, False], chosen_index=2, fill="", alternatives=[],
+        CheckResult(qid="q1", passes=[False, False, True, False], tempting=[True, False, True, True], chosen_index=2,
+                    fill="", alternatives=[], ambiguous=False, reason="clear"),
+        CheckResult(qid="q2", passes=[], tempting=[], chosen_index=-1, fill="huge", alternatives=["giant"],
                     ambiguous=False, reason="clear"),
-        CheckResult(qid="q2", passes=[], chosen_index=-1, fill="huge", alternatives=["giant"], ambiguous=False,
-                    reason="clear"),
     ]
 
 
@@ -197,6 +200,8 @@ def test_parse_check_valid():
         {"results": [{**CHECK, "ambiguous": "maybe"}]},
         {"results": [{k: v for k, v in CHECK.items() if k != "passes"}]},  # the old result shape
         {"results": [{k: v for k, v in CHECK.items() if k != "alternatives"}]},
+        {"results": [{k: v for k, v in CHECK.items() if k != "tempting"}]},  # the round-3 result shape
+        {"results": [{**CHECK, "tempting": "yes"}]},
         {"results": [{**CHECK, "passes": "yes"}]},
         {"results": [{**CHECK, "alternatives": [1, 2]}]},
         None,

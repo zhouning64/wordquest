@@ -180,6 +180,7 @@ def create_app(
                 model_name=getattr(llm_, "model", settings.cerebras_model),
                 rejection_log=JsonlLog(logs_dir / "ai-rejections.jsonl"),
                 usage_log=JsonlLog(logs_dir / "ai-usage.jsonl"),
+                generation_reasoning_effort=settings.llm_reasoning_effort or None,
             )
 
         owned_provider: ImageProvider | None = None

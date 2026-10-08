@@ -43,8 +43,12 @@ MIN_POOL = 6
 MIN_TIER1 = 2
 MIN_TIER2 = 1
 
-# The blind check tests every choice, so it gets more thinking time; the card and batch calls keep the default.
+# The blind check tests every choice, so it gets more thinking time; the card and batch calls use the configured
+# generation effort (LLM_REASONING_EFFORT).
 CHECK_REASONING_EFFORT = "high"
+# A choice question is kept only if at least this many of its 3 wrong choices could tempt a learner in the band who
+# half-knows the word (the checker's `tempting` ratings), so it cannot be passed by elimination.
+MIN_TEMPTING_WRONG = 2
 
 
 def _ordered_mix(counts: dict[str, int]) -> dict[str, int]:
@@ -143,7 +147,8 @@ def _accepted(q: RawQuestion) -> list[str]:
 
 def _check_problem(q: RawQuestion, r: CheckResult) -> str:
     """Why the blind check does not verify q ("" when it does). A choice question needs exactly one passing
-    choice, the key, chosen by the checker; spell_it needs an accepted fill and no other word that fits."""
+    choice, the key, chosen by the checker, and at least MIN_TEMPTING_WRONG tempting wrong choices; spell_it needs
+    an accepted fill and no other word that fits."""
     if q.type == "spell_it":
         accepted = _accepted(q)
         if normalize_answer(r.fill) not in accepted:
@@ -167,7 +172,15 @@ def _check_problem(q: RawQuestion, r: CheckResult) -> str:
             return "check: the passing choice is not the key"
         if r.chosen_index != q.answer_index:
             return "check: answer mismatch"
-    return "check: ambiguous" if r.ambiguous else ""
+    if r.ambiguous:
+        return "check: ambiguous"
+    if q.type != "spell_it":
+        if len(r.tempting) != len(q.choices):
+            return f"check: {len(r.tempting)} tempting for {len(q.choices)} choices"
+        tempting = sum(1 for i, t in enumerate(r.tempting) if t and i != q.answer_index)
+        if tempting < MIN_TEMPTING_WRONG:
+            return f"check: too easy ({tempting} of {len(q.choices) - 1} wrong choices tempting)"
+    return ""
 
 
 class ContentGenerator:
@@ -266,7 +279,7 @@ class ContentGenerator:
             {"qid": qid, "type": q.type, "prompt": q.prompt, "choices": list(q.choices)}
             for qid, q in candidates.items()
         ]
-        system, user = check_prompt(items)
+        system, user = check_prompt(items, band)
         result = await self.llm.chat_json(
             name=ANSWER_CHECK,
             schema=ANSWER_CHECK_SCHEMA,
@@ -289,6 +302,7 @@ class ContentGenerator:
             by_qid.setdefault(r.qid, []).append(r)
 
         # 4) keep only questions the blind checker answered exactly once, with the key as the only right answer
+        #    and (choice questions) enough tempting wrong choices
         now = clock.utc_now_iso()  # through the module, so tests can freeze time
         verified: list[Question] = []
         for qid, q in candidates.items():

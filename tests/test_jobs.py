@@ -53,7 +53,9 @@ class GateLLM:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def chat_json(self, *, name: str, schema: dict, system: str, user: str) -> LLMResult:
+    async def chat_json(
+        self, *, name: str, schema: dict, system: str, user: str, reasoning_effort: str | None = None
+    ) -> LLMResult:
         self.started.set()
         await self.release.wait()
         return LLMResult(data=dict(self.data), usage={"completion_tokens": 10}, finish_reason="stop")
@@ -67,7 +69,9 @@ class SlowLLM:
         self.active = 0
         self.max_active = 0
 
-    async def chat_json(self, *, name: str, schema: dict, system: str, user: str) -> LLMResult:
+    async def chat_json(
+        self, *, name: str, schema: dict, system: str, user: str, reasoning_effort: str | None = None
+    ) -> LLMResult:
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         try:
@@ -89,7 +93,9 @@ def clk():
 
 def make_worker(repo, clk, tmp_path, *, llm=None, images=None, blobs=None, limit=2000, concurrency=3):
     settings = Settings(_env_file=None, data_dir=tmp_path, gen_concurrency=concurrency, ai_daily_call_limit=limit)
-    generator = None if llm is None else ContentGenerator(llm, model_name="fake-model")
+    # wired like app.main, so the doubles below also see the default reasoning_effort on the card and batch calls
+    generator = None if llm is None else ContentGenerator(
+        llm, model_name="fake-model", generation_reasoning_effort=settings.llm_reasoning_effort or None)
     return Worker(repo=repo, blobs=blobs if blobs is not None else MemoryBlobStore(), generator=generator,
                   image_provider=images, settings=settings, now_fn=clk)
 

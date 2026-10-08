@@ -75,7 +75,8 @@ class Closings:
         class ClosingLLM:
             model = "closing-model"
 
-            async def chat_json(self, *, name: str, schema: dict, system: str, user: str):
+            async def chat_json(self, *, name: str, schema: dict, system: str, user: str,
+                                reasoning_effort: str | None = None):
                 raise AssertionError("no model call in this test")
 
             async def aclose(self) -> None:
@@ -186,7 +187,8 @@ def test_ai_clients_share_the_workers_daily_call_limit_hook(tmp_path, monkeypatc
             captured["llm_kwargs"] = kwargs
             self.model = kwargs["model"]
 
-        async def chat_json(self, *, name: str, schema: dict, system: str, user: str):
+        async def chat_json(self, *, name: str, schema: dict, system: str, user: str,
+                            reasoning_effort: str | None = None):
             raise AssertionError("no model call in this test")
 
         async def aclose(self) -> None:
@@ -214,6 +216,18 @@ def test_ai_clients_share_the_workers_daily_call_limit_hook(tmp_path, monkeypatc
         assert isinstance(app.state.generator, ContentGenerator)
         assert app.state.worker.generator is app.state.generator
     assert captured["closed"] is True  # the app closes the client it created
+
+
+@pytest.mark.parametrize("effort, expected", [(None, "medium"), ("high", "high"), ("low", "low"), ("", None)])
+def test_generator_gets_the_configured_reasoning_effort(tmp_path, effort, expected):
+    # LLM_REASONING_EFFORT reaches the card and batch calls; "" leaves the model's own default (nothing sent)
+    overrides = {} if effort is None else {"llm_reasoning_effort": effort}
+    app = create_app(make_settings(tmp_path, **overrides), **injected(tmp_path), llm=FakeLLM(),
+                     start_worker=False, seed=False)
+    with TestClient(app):
+        assert isinstance(app.state.generator, ContentGenerator)
+        assert app.state.generator.generation_reasoning_effort == expected
+        assert app.state.worker.generator is app.state.generator
 
 
 def test_secrets_are_registered_for_redaction(tmp_path):

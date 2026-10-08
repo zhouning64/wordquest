@@ -128,8 +128,11 @@ In the Parent area:
    CEREBRAS_API_KEY=csk-your-key-here
    ```
 
-   The default model is `gpt-oss-120b`; set `CEREBRAS_MODEL` to use another Cerebras model that supports strict
-   `json_schema` output.
+   The default model is `qwen-3.8-27b` at medium reasoning (`LLM_REASONING_EFFORT=medium`, used for the Learn card
+   and the questions; the blind answer check always uses high). In a blind comparison on 17 fresh words it had about
+   half the serious-problem rate of `gpt-oss-120b` (6% vs 13% of shown questions) and kept 18% more questions.
+   `gpt-oss-120b` remains available: set `CEREBRAS_MODEL=gpt-oss-120b` and leave `LLM_REASONING_EFFORT=` empty (the
+   model's own default). Any other Cerebras model that supports strict `json_schema` output also works.
 
 3. Check the key with the smoke script (it generates two words and prints the Learn cards, the questions that passed
    the checks, and the token usage; nothing is saved to the database):
@@ -137,6 +140,7 @@ In the Parent area:
    ```bash
    .venv/bin/python scripts/smoke_ai.py
    .venv/bin/python scripts/smoke_ai.py --band 3-5 brave curious     # other words / another band
+   .venv/bin/python scripts/smoke_ai.py --reasoning-effort high brave  # override LLM_REASONING_EFFORT
    ```
 
    Exit code 1 with "CEREBRAS_API_KEY is not set" means `.env` has no key (run the script from the repo root).
@@ -145,6 +149,10 @@ In the Parent area:
 
 Cost and rate controls (all in `.env`):
 
+- Cost with the default model: about 5¢ per word per grade band, so a 600-word list costs about $28 for one band
+  (pictures are extra, see [Pictures](#pictures-zai)). Each word takes roughly 3–4 Cerebras calls (Learn card,
+  question batch and answer check, plus a replacement batch now and then). `AI_DAILY_CALL_LIMIT` counts calls, not
+  tokens, so it is unaffected by the model choice.
 - `AI_DAILY_CALL_LIMIT` (default 2000) caps outbound AI requests (text and pictures) per UTC day. When it is
   reached, waiting words pause until tomorrow and the Parent area says "Paused until tomorrow".
 - `GEN_CONCURRENCY` (default 3) is how many words are prepared in parallel. Lower it if the Cerebras free tier
@@ -238,10 +246,11 @@ emoji scene (use Retry picture). Alternatively, stop the server and copy the who
 | Variable | Default | Meaning |
 |---|---|---|
 | `CEREBRAS_API_KEY` | *(empty)* | Empty = AI disabled |
-| `CEREBRAS_MODEL` | `gpt-oss-120b` | Cerebras model with strict `json_schema` support |
+| `CEREBRAS_MODEL` | `qwen-3.8-27b` | Cerebras model with strict `json_schema` support (`gpt-oss-120b` also works) |
 | `CEREBRAS_BASE_URL` | `https://api.cerebras.ai/v1` | |
-| `LLM_MAX_COMPLETION_TOKENS` | `16000` | Sent as `max_completion_tokens` |
-| `LLM_TIMEOUT_S` | `60` | Seconds per AI request |
+| `LLM_MAX_COMPLETION_TOKENS` | `40000` | Sent as `max_completion_tokens` |
+| `LLM_TIMEOUT_S` | `180` | Seconds per AI request |
+| `LLM_REASONING_EFFORT` | `medium` | `low`, `medium` or `high` for the Learn-card and question calls; empty = the model's default (use empty for `gpt-oss-120b`). The answer check always uses `high` |
 | `IMAGE_PROVIDER` | `none` | `none` or `openai_compatible` (z.ai: see [Pictures](#pictures-zai)) |
 | `IMAGE_BASE_URL` | *(empty)* | Required for `openai_compatible` (no default) — z.ai: `https://api.z.ai/api/paas/v4` |
 | `IMAGE_MODEL` | *(empty)* | Required for `openai_compatible` — z.ai: `glm-image` or `cogview-4-250304` |

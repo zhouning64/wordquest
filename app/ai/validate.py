@@ -108,6 +108,40 @@ def _clean_forms(word: str, forms: list[str]) -> list[str]:
     return out
 
 
+def _named_parts(word_parts: str) -> list[str]:
+    """The text before each top-level "(" in word_parts, back to the previous "+" or ")": "frug- (fruit) + -al (like)
+    = careful" names "frug- " and " -al ". Nothing after a top-level "=" (the combined meaning) is a part."""
+    parts: list[str] = []
+    current, depth = "", 0
+    for ch in word_parts:
+        if ch == "(":
+            if depth == 0:
+                parts.append(current)
+            depth += 1
+        elif ch == ")":
+            depth, current = max(0, depth - 1), ""
+        elif depth == 0:
+            if ch == "=":
+                break
+            current = "" if ch == "+" else current + ch
+    return parts
+
+
+def _clean_word_parts(word: str, word_parts: str) -> str:
+    """L10: "" for a phrase target, or when a part named in word_parts is not visible in the word's spelling
+    (hyphens removed, case-insensitive, quotes ignored; "a/b" names alternatives, one of which must show)."""
+    if not word_parts.strip():
+        return word_parts
+    if len(word.split()) > 1:
+        return ""
+    spelling = word.replace("-", "").casefold()
+    for part in _named_parts(word_parts):
+        options = [o.replace("-", "").strip().strip("\"'“”‘’").casefold() for o in part.split("/")]
+        if not any(o in spelling for o in options):
+            return ""
+    return word_parts
+
+
 def _clean_related(items: list[str], word: str, extra: list[str]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -155,9 +189,10 @@ def _card_texts(card: LearnCard) -> list[tuple[str, str]]:
 
 
 def validate_card(word: str, band: str, card: LearnCard, *, legacy: bool = False) -> CardCheck:
-    """Apply L1–L9. Returns a cleaned copy (examples filtered to ≤6 new sentences that use the word,
+    """Apply L1–L10. Returns a cleaned copy (examples filtered to ≤6 new sentences that use the word,
     synonyms/antonyms without the word and truncated to 5, default emoji scene if needed; for AI cards also
-    typographic hyphens normalized and stray several-word forms dropped) or card=None with every error."""
+    typographic hyphens normalized, stray several-word forms dropped, and word_parts emptied for a phrase or a part
+    not visible in the word) or card=None with every error."""
     errors: list[str] = []
     if not legacy:
         card = LearnCard.model_validate(_fix_hyphens(card.model_dump()))
@@ -208,10 +243,13 @@ def validate_card(word: str, band: str, card: LearnCard, *, legacy: bool = False
     # L7 emoji scene (substitute, never reject)
     emoji = card.emoji_scene.strip() if _emoji_ok(card.emoji_scene) else DEFAULT_EMOJI_SCENE
 
+    # L10 word parts (cleaned, never a reason to reject; legacy notes are kept as written)
+    word_parts = card.word_parts if legacy else _clean_word_parts(word, card.word_parts)
+
     cleaned = card.model_copy(
         deep=True,
         update={"forms": forms, "examples": examples, "synonyms": synonyms, "antonyms": antonyms,
-                "emoji_scene": emoji},
+                "emoji_scene": emoji, "word_parts": word_parts},
     )
 
     # L5 sentence length
@@ -270,6 +308,11 @@ _POSITION_FIXABLE = re.compile(
 # A negation in the sentence that names the choice ("The first sentence does not use…", "Not the first
 # choice…"): rewriting it as "the correct sentence" would make the explanation false, so it is left for Q9.
 _NEGATION = re.compile(r"(?i:\b(?:not|never|cannot)\b|n['’]t\b)")
+# Where the negation scan after the reference stops: the sentence end, or "because", ":" or "," (what follows is
+# about the scene, as in "The first sentence is right because Ava does not waste food.").
+_SCAN_STOP = re.compile(r"[.!?,:]|(?i:\bbecause\b)")
+# A bare ordinal left elsewhere in the explanation ("…, but the second does not") still points at a choice.
+_BARE_ORDINAL = re.compile(r"(?i:\bthe\s+(?:first|second|third|fourth|last)\b)")
 _LEADING_NOT = re.compile(r"\s*Not\b")
 # A spell_it prompt ending in a parenthetical cue without the "means:" label ("(makes trouble smaller)").
 _BARE_CUE = re.compile(r"\((?!\s*means\s*:)\s*(?P<body>[^()_]*[^\s()_])\s*\)\s*\.?\s*$", re.IGNORECASE)
@@ -307,22 +350,25 @@ def _the_correct(m: re.Match[str]) -> str:
 
 
 def _negated(text: str, start: int, end: int) -> bool:
-    """True if text starts with "Not" or the sentence holding text[start:end] contains a negation."""
+    """True if text starts with "Not" or the sentence holding text[start:end] has a negation before the next
+    "because", ":" or "," (or the sentence end)."""
     if _LEADING_NOT.match(text):
         return True
     begin = max(text.rfind(mark, 0, start) for mark in ".!?") + 1
-    stops = [i for i in (text.find(mark, end) for mark in ".!?") if i != -1]
-    return bool(_NEGATION.search(text[begin : min(stops, default=len(text))]))
+    stop = _SCAN_STOP.search(text, end)
+    return bool(_NEGATION.search(text[begin : stop.start() if stop else len(text)]))
 
 
 def _repair_position(explanation: str) -> str:
     """Rewrite an explanation's one reference to a choice by position as "the correct sentence" (etc.). Left
-    unchanged, for Q9 to reject, when there are several references, it points at a wrong choice, it is negated,
-    or the result would be too long."""
+    unchanged, for Q9 to reject, when there are several references (a bare "the second" counts), it points at a
+    wrong choice, it is negated, or the result would be too long."""
     if sum(1 for _ in _POSITION_REF.finditer(explanation)) != 1:
         return explanation
     m = _POSITION_FIXABLE.search(explanation)
     if m is None or _negated(explanation, m.start(), m.end()):
+        return explanation
+    if _BARE_ORDINAL.search(explanation[: m.start()] + " " + explanation[m.end() :]):
         return explanation
     fixed = explanation[: m.start()] + _the_correct(m) + explanation[m.end() :]
     return fixed if len(fixed) <= EXPLANATION_MAX else explanation
@@ -386,7 +432,8 @@ def _misspells_word(text: str, forms: set[str]) -> bool:
 
 
 # Q5 near-copies: a prompt or sentence choice that shares with a Learn-card sentence (or the kid_def) a first name
-# and 3+ other content words, or 60%+ of its own content words (when it has at least 4).
+# and 3+ other content words, or 60%+ of its own content words (when it has at least 4; Learn-card sentences only,
+# since a fill_blank clue states the meaning, so overlap with the kid_def is expected).
 _NEAR_COPY_NAME_WORDS = 3
 _NEAR_COPY_PERCENT = 60
 _NEAR_COPY_MIN_WORDS = 4
@@ -423,18 +470,19 @@ class _Ctx:
     learn: set[str]
     legacy: bool
     word_tokens: set[str]
-    learn_words: list[tuple[set[str], set[str]]]  # (content words, names) of each Learn-card sentence
+    # (content words, names, whether the 60% rule applies) of each Learn-card sentence and the kid_def
+    learn_words: list[tuple[set[str], set[str], bool]]
 
 
 def _near_copy(text: str, ctx: _Ctx) -> bool:
     words = _content_words(text, ctx.word_tokens)
     names = _names(text, ctx.word_tokens)
-    for learn_words, learn_names in ctx.learn_words:
+    for learn_words, learn_names, percent_rule in ctx.learn_words:
         shared = words & learn_words
         shared_names = names & learn_names
         if shared_names and len(shared - shared_names) >= _NEAR_COPY_NAME_WORDS:
             return True
-        if len(words) >= _NEAR_COPY_MIN_WORDS and 100 * len(shared) >= _NEAR_COPY_PERCENT * len(words):
+        if percent_rule and len(words) >= _NEAR_COPY_MIN_WORDS and 100 * len(shared) >= _NEAR_COPY_PERCENT * len(words):
             return True
     return False
 
@@ -598,8 +646,8 @@ def validate_questions(
         legacy=legacy,
         word_tokens=word_tokens,
         learn_words=[
-            (_content_words(s, word_tokens), _names(s, word_tokens))
-            for s in [*learn_sentences, card.kid_def] if s.strip()
+            (_content_words(s, word_tokens), _names(s, word_tokens), percent_rule)
+            for s, percent_rule in [*((s, True) for s in learn_sentences), (card.kid_def, False)] if s.strip()
         ],
     )
     seen_prompts = {_norm(_without_hint(p)) for p in existing_prompts if p.strip()}  # old prompts may lack a hint

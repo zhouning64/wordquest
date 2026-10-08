@@ -361,6 +361,77 @@ def test_l9_the_example_minimum_applies_after_dropping_repeats():
     assert "L2: only 3 examples use the word (need 4)" in check.errors
 
 
+# --- L10 word_parts: phrases and invisible parts (cleaned, never a reason to reject) -------------------
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        "frux (fruit, value) + -al (like) = getting full value",  # "frux" is not in "frugal"
+        "frug- (fruit) + -ous (full of) = full of value",  # "ous" is not in "frugal"
+        "Latin frux (fruit) + -al (like)",  # the named text must appear as written
+    ],
+)
+def test_l10_word_parts_with_a_part_not_visible_in_the_word_are_emptied(parts):
+    check = validate_card(WORD, "6-8", make_card(word_parts=parts))
+    assert check.errors == []
+    assert check.card.word_parts == ""
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        "frug- (fruit, value) + -al (like) = careful with value",
+        "FRUG (fruit) + al (like)",  # case-insensitive
+        '"frug" (fruit) + "-al" (like)',  # quotes around a part are ignored
+        "frux/frug- (fruit) + -al (like)",  # one spelling of a part that names alternatives is enough
+        "frug- (fruit) + -al (like) = careful (not wasteful)",  # the combined meaning after "=" names no part
+        "frug- (fruit (Latin frux) = value) + -al (like)",  # brackets and "=" inside a meaning name no part
+        "careful with money",  # names no part at all
+    ],
+)
+def test_l10_word_parts_whose_named_parts_are_all_visible_are_kept(parts):
+    check = validate_card(WORD, "6-8", make_card(word_parts=parts))
+    assert check.errors == []
+    assert check.card.word_parts == parts
+
+
+def test_l10_hyphens_are_ignored_on_both_sides():
+    card = make_card(
+        pos="noun", forms=[], short_def="how much you value yourself",
+        kid_def="Your self-esteem is how much you like and respect yourself.",
+        senses=[Sense(pos="noun", definition="respect for yourself", example="Kind words lift Ben's self-esteem.")],
+        examples=["Aisha's self-esteem grew after the recital.", "Good friends help your self-esteem.",
+                  "Leo's self-esteem rose when he solved the puzzle.", "Practice built Maya's self-esteem."],
+        right_use=RightUse(sentence="Helping others boosted Zoe's self-esteem."),
+        wrong_use=WrongUse(sentence="The self-esteem of the bridge held the trucks.", why="It means respect, not strength."),
+        word_parts="self- (your own) + esteem (respect) = respect for your own worth",
+    )
+    check = validate_card("self-esteem", "6-8", card)
+    assert check.errors == []
+    assert check.card.word_parts == card.word_parts
+
+
+def test_l10_a_phrase_target_never_has_word_parts():
+    card = make_card(
+        pos="verb phrase", forms=["takes for granted", "took for granted"],
+        senses=[Sense(pos="verb phrase", definition="to not notice how much something helps you",
+                      example="Zoe takes her teacher's help for granted.")],
+        examples=["Aisha took her morning walk for granted.", "Ben took sunny days for granted.",
+                  "Do you take clean water for granted?", "Leo never takes his friends for granted."],
+        right_use=RightUse(sentence="Kenji took his old bike for granted until it broke."),
+        wrong_use=WrongUse(sentence="Maya took the bus for granted to school.", why="It means not valuing something."),
+        word_parts="take (grab) + granted (given) = treat as given",
+    )
+    check = validate_card("take for granted", "6-8", card)
+    assert check.errors == []
+    assert check.card.word_parts == ""
+
+
+def test_l10_skips_legacy_cards():
+    card = legacy_card(word_parts="frux (Latin, fruit/value) = getting full value")
+    assert validate_card(WORD, "6-8", card, legacy=True).card.word_parts == card.word_parts
+
+
 def test_typographic_hyphens_are_normalized_in_card_text():
     examples = make_card().examples[:3] + ["Our fru\u00adgal club built a robot from spare\u2010parts."]
     card = make_card(kid_def="A frugal person has self\u2011control with money.", examples=examples,
@@ -981,9 +1052,6 @@ def test_q13_skips_legacy_questions():
         variant("scenario", choices=["Sam fixed his old skateboard instead of buying a new one.",
                                      "Ben buys three snacks he will not eat.", "Cara leaves her jacket at the park.",
                                      "Dev sings loudly in the hallway."]),
-        # a usage choice that copies the card's kid_def (the word itself is not counted)
-        variant("usage", choices=GOOD["usage"].choices[:3]
-                + ["A frugal person spends money carefully and never wastes food or cash."]),
         variant("spell_it", prompt="Our science club built a ___ robot from spare parts. (means: careful with money)"),
     ],
 )
@@ -1007,10 +1075,25 @@ def test_q5_near_copy_of_a_learn_card_sentence_is_rejected(q):
         variant("meaning", choices=["spends money carefully and does not waste food or cash", "very angry about losing",
                                     "fast at running races", "happy to share secrets"]),
         variant("pick_word", prompt="Which word means spends money carefully and does not waste food or cash?"),
+        # round 4: the kid_def is compared by the shared-name rule only, never the 60% rule (a fill_blank clue states
+        # the meaning, so overlap with the kid_def is expected); these are the reviewer's probes
+        variant("fill_blank", prompt="The ___ club spends money carefully and wastes nothing."),
+        variant("fill_blank", prompt="Ben is ___ with money and does not waste things he can reuse."),
+        variant("usage", choices=GOOD["usage"].choices[:3]
+                + ["A frugal person spends money carefully and never wastes food or cash."]),
     ],
 )
 def test_q5_allows_questions_that_only_share_a_few_words(q):
     assert only(q) is None
+
+
+def test_q5_kid_def_still_counts_for_the_shared_name_rule():
+    card = make_card(word_parts=PARTS, kid_def="Like Priya, a frugal person spends money carefully and saves cash.")
+    # the same name plus spends, money, carefully (4 of 8 content words, under 60%): still a near-copy
+    q = variant("fill_blank", prompt="Priya was ___ and spends money carefully at the busy summer fair today.")
+    assert only(q, card=card) == "Q5: near-copy of a Learn-card sentence"
+    # no shared name: 3 of 5 content words (60%) shared with the kid_def is fine
+    assert only(variant("fill_blank", prompt="Omar was ___ and spends money carefully at the fair."), card=card) is None
 
 
 def test_q5_near_copy_skips_legacy_questions():
@@ -1032,6 +1115,9 @@ def test_q5_near_copy_skips_legacy_questions():
         "Option B never shows careful spending.",
         "Choice 3 cannot be right; frugal is about money.",
         "Not the first choice: frugal means careful with money.",
+        # round 4: the scan now stops at ",", so a second, bare ordinal ("the second") blocks the repair instead
+        "The first choice fits, but the second does not.",
+        "Sentence 1 fits, but not the last.",
     ],
 )
 def test_q9_more_positional_shapes_and_negated_references_are_rejected(explanation):
@@ -1045,6 +1131,12 @@ def test_q9_more_positional_shapes_and_negated_references_are_rejected(explanati
         ("The first definition matches careful spending.", "The correct definition matches careful spending."),
         ("Only definition 2 is about money.", "Only the correct definition is about money."),
         ("The first sentence shows saving. The others do not.", "The correct sentence shows saving. The others do not."),
+        # round 4: a negation after "because", ":" or "," is about the scene, not the reference
+        ("The first sentence is right because Ava does not waste food.",
+         "The correct sentence is right because Ava does not waste food."),
+        ("Sentence 2 shows frugal: Ben doesn't buy what he won't use.",
+         "The correct sentence shows frugal: Ben doesn't buy what he won't use."),
+        ("The first choice fits, since Ben never wastes money.", "The correct choice fits, since Ben never wastes money."),
     ],
 )
 def test_q9_more_positional_shapes_are_repaired(explanation, repaired):

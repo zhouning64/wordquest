@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from app.config import Settings
 
@@ -14,10 +15,11 @@ SECRET_FIELDS = {"cerebras_api_key", "image_api_key", "site_access_code", "paren
 def test_defaults() -> None:
     s = Settings(_env_file=None)
     assert s.cerebras_api_key == ""
-    assert s.cerebras_model == "gpt-oss-120b"
+    assert s.cerebras_model == "qwen-3.8-27b"
     assert s.cerebras_base_url == "https://api.cerebras.ai/v1"
-    assert s.llm_max_completion_tokens == 16000
-    assert s.llm_timeout_s == 60.0
+    assert s.llm_max_completion_tokens == 40000
+    assert s.llm_timeout_s == 180.0
+    assert s.llm_reasoning_effort == "medium"
     assert s.image_provider == "none"
     assert s.image_api_key == "" and s.image_model == "" and s.image_base_url == ""
     assert s.image_size == "1024x1024" and s.image_quality == ""
@@ -47,6 +49,26 @@ def test_environment_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     assert s.image_provider == "openai_compatible"
     assert s.image_size == "1280x1280" and s.image_quality == "hd"
     assert s.ai_enabled is True
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [("", ""), ("low", "low"), ("medium", "medium"), ("high", "high"), (" High ", "high"), ("   ", "")],
+)
+def test_llm_reasoning_effort_accepts_low_medium_high_or_empty(monkeypatch: pytest.MonkeyPatch, value, expected) -> None:
+    assert Settings(_env_file=None, llm_reasoning_effort=value).llm_reasoning_effort == expected
+    monkeypatch.setenv("LLM_REASONING_EFFORT", value)  # "" = the model's own default
+    assert Settings(_env_file=None).llm_reasoning_effort == expected
+
+
+@pytest.mark.parametrize("value", ["extreme", "max", "none", "med"])
+def test_llm_reasoning_effort_rejects_anything_else_with_a_clear_error(monkeypatch: pytest.MonkeyPatch, value) -> None:
+    monkeypatch.setenv("LLM_REASONING_EFFORT", value)
+    with pytest.raises(ValidationError) as exc:
+        Settings(_env_file=None)
+    message = str(exc.value)
+    assert f"Unknown LLM_REASONING_EFFORT {value!r}" in message
+    assert "'low', 'medium' or 'high'" in message and "empty for the model's default" in message
 
 
 def test_env_file_is_read_and_unknown_keys_are_ignored(tmp_path: Path) -> None:

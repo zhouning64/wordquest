@@ -5,17 +5,21 @@ import os
 import secrets
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+REASONING_EFFORTS = ("low", "medium", "high")  # LLM_REASONING_EFFORT; "" = the model's own default (nothing sent)
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     cerebras_api_key: str = ""
-    cerebras_model: str = "gpt-oss-120b"
+    cerebras_model: str = "qwen-3.8-27b"
     cerebras_base_url: str = "https://api.cerebras.ai/v1"
-    llm_max_completion_tokens: int = 16000
-    llm_timeout_s: float = 60.0
+    llm_max_completion_tokens: int = 40000
+    llm_timeout_s: float = 180.0
+    llm_reasoning_effort: str = "medium"  # Learn-card and question calls; the blind answer check always uses "high"
     image_provider: str = "none"  # "none" | "openai_compatible" (chosen provider: z.ai)
     image_api_key: str = ""
     image_model: str = ""  # z.ai: "glm-image" or "cogview-4-250304"
@@ -29,6 +33,16 @@ class Settings(BaseSettings):
     storage: str = "local"
     gen_concurrency: int = 3
     ai_daily_call_limit: int = 2000
+
+    @field_validator("llm_reasoning_effort", mode="before")
+    @classmethod
+    def _check_reasoning_effort(cls, value: object) -> str:
+        effort = str(value if value is not None else "").strip().lower()
+        if effort and effort not in REASONING_EFFORTS:
+            raise ValueError(
+                f"Unknown LLM_REASONING_EFFORT {value!r} (use 'low', 'medium' or 'high', or empty for the model's default)"
+            )
+        return effort
 
     @property
     def ai_enabled(self) -> bool:
