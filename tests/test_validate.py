@@ -853,6 +853,7 @@ def test_q9_explanation_must_not_name_a_choice_position(explanation):
         "The best answer is careful with money.",
         "I'm sure frugal fits, because Ava saves her money.",
         "Ava was the first one to pack lunch and save money.",
+        "Ava finished 2nd in the race and saved her prize money.",
     ],
 )
 def test_q9_allows_ordinary_wording(explanation):
@@ -910,36 +911,37 @@ def test_q10_correctly_spelled_choices_pass():
 
 
 @pytest.mark.parametrize(
-    "explanation, repaired",
+    "explanation",
     [
-        ("Only the first sentence shows the adjective meaning eager to learn.",
-         "Only the correct sentence shows the adjective meaning eager to learn."),
-        ('Sentence 1 uses "curious" to mean eager to learn.', 'The correct sentence uses "curious" to mean eager to learn.'),
-        ("The first choice matches the definition of gigantic.", "The correct choice matches the definition of gigantic."),
-        ("Only sentence 3 uses mitigate to mean lessen fatigue.",
-         "Only the correct sentence uses mitigate to mean lessen fatigue."),
-        ("the second option shows careful spending.", "The correct option shows careful spending."),
-        ("It saves money, so option B fits.", "It saves money, so the correct option fits."),
-        ("Saving is careful. Choice 2 shows it.", "Saving is careful. The correct choice shows it."),
-        ("The last answer names careful spending.", "The correct answer names careful spending."),
+        # fix round 3: positional explanations are never rewritten, not even these once-repaired live samples
+        "Only the first sentence shows the adjective meaning eager to learn.",
+        'Sentence 1 uses "curious" to mean eager to learn.',
+        "The first choice matches the definition of gigantic.",
+        "Only sentence 3 uses mitigate to mean lessen fatigue.",
+        "the second option shows careful spending.",
+        "It saves money, so option B fits.",
+        "Saving is careful. Choice 2 shows it.",
+        "The last answer names careful spending.",
+        "Sentence 0 uses frugal to mean careful with money.",
+        "The first definition matches careful spending.",
+        "Only definition 2 is about money.",
+        "Sentence 2 uses frugal incorrectly.",  # a rewrite would make this false
+        # numeric ordinals (the re-review found these undetected)
+        "The 2nd one shows careful spending.",
+        "The 3rd choice is about saving money.",
+        "The 1st sentence uses frugal well.",
+        "The 4th option fits the clue.",
     ],
 )
-def test_q9_positional_explanation_is_repaired(explanation, repaired):
+def test_q9_rejects_every_positional_explanation_without_rewriting_it(explanation):
     kept, drops = vq([variant("meaning", explanation=explanation)])
-    assert drops == []
-    assert kept[0].explanation == repaired and len(repaired) <= validate.EXPLANATION_MAX
-
-
-def test_q9_repair_never_pushes_the_explanation_over_the_limit():
-    explanation = "Sentence 1 shows saving. " + "Frugal people spend with care. " * 4 + "Truly."
-    assert 150 < len(explanation) <= validate.EXPLANATION_MAX
-    assert only(variant("meaning", explanation=explanation)) == "Q9: explanation refers to a choice position"
+    assert kept == [] and [d.reason for d in drops] == ["Q9: explanation refers to a choice position"]
 
 
 def test_q9_and_q10_skip_legacy_questions():
     assert only(variant("meaning", explanation="The first choice is right."), legacy=True) is None
     kept, _ = vq([variant("meaning", explanation="The first choice is right.")], legacy=True)
-    assert kept[0].explanation == "The first choice is right."  # legacy is never repaired
+    assert kept[0].explanation == "The first choice is right."  # legacy explanations are kept as written
     assert reason_for("ephemeral", rq("meaning", 'What does "ephem-eral" mean?', MEANINGS, 0), legacy=True) is None
 
 
@@ -1122,21 +1124,19 @@ def test_q5_near_copy_skips_legacy_questions():
     assert only(q, legacy=True) is None
 
 
-# --- Q9 more positional shapes and negated references ----------------------------------------------
+# --- Q9 more positional shapes (the round-4 reviews' probes) ----------------------------------------
 
 @pytest.mark.parametrize(
     "explanation",
     [
         "The first one is right because Ava saves her money.",
-        "Definition 1 is wrong and definition 3 is right.",  # two references: no safe repair
+        "Definition 1 is wrong and definition 3 is right.",
         "Sentence 0 is right and sentence 2 is not.",
-        # a negated reference is never repaired into a false statement
         "The first sentence does not use frugal correctly.",
         "Sentence 2 isn't about saving, so it is wrong.",
         "Option B never shows careful spending.",
         "Choice 3 cannot be right; frugal is about money.",
         "Not the first choice: frugal means careful with money.",
-        # reviews of round 4: another ordinal or a negation/judgement word anywhere blocks the repair (fail-closed)
         "The first choice fits, but the second does not.",
         "Sentence 1 fits, but not the last.",
         "The first choice fits; the third one is about a bus.",
@@ -1151,7 +1151,6 @@ def test_q5_near_copy_skips_legacy_questions():
         "Sentence 3 is incorrect for frugal.",
         "It is false that sentence 2 fits.",
         "The first choice is right; calling it wrong is a mistake.",
-        # fail-closed costs these, which a finer rule could repair; a lost question is better than a false one
         "The first sentence shows saving. The others do not.",
         "The first sentence is right because Ava does not waste food.",
         "Sentence 2 shows frugal: Ben doesn't buy what he won't use.",
@@ -1160,19 +1159,10 @@ def test_q5_near_copy_skips_legacy_questions():
         "Sentence 1 shows Ben was the first to save.",
     ],
 )
-def test_q9_more_positional_shapes_and_negated_references_are_rejected(explanation):
+def test_q9_more_positional_shapes_are_rejected(explanation):
     assert only(variant("meaning", explanation=explanation)) == "Q9: explanation refers to a choice position"
 
 
-@pytest.mark.parametrize(
-    "explanation, repaired",
-    [
-        ("Sentence 0 uses frugal to mean careful with money.", "The correct sentence uses frugal to mean careful with money."),
-        ("The first definition matches careful spending.", "The correct definition matches careful spending."),
-        ("Only definition 2 is about money.", "Only the correct definition is about money."),
-    ],
-)
-def test_q9_more_positional_shapes_are_repaired(explanation, repaired):
-    kept, drops = vq([variant("meaning", explanation=explanation)])
-    assert drops == []
-    assert kept[0].explanation == repaired
+def test_no_positional_repair_code_remains():
+    for name in ("_repair_position", "_POSITION_FIXABLE", "_REPAIR_BLOCKER", "_the_correct"):
+        assert not hasattr(validate, name), name

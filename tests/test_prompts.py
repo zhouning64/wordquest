@@ -66,6 +66,7 @@ REMOVED = (
     "massive / tiny", "braved", "careful with money", "candidly",
     "chemical spill", "spill", "flames",  # fix round 1: the model copied "Priya ___ the chemical spill"
     "advocated", "kitchen", "come to terms",  # round 4: the review's examples stay out of the prompts
+    "ancient", "grumpy", "tidy",  # fix round 3: likely target words never appear as named examples
 )
 
 
@@ -205,9 +206,13 @@ def test_question_batch_prompt_contents():
     near_miss = next(l for l in system.splitlines() if l.startswith("- Wrong choices"))
     for rule in ("near misses that tempt a student who half-knows the word", "same part of speech, length and style",
                  "words this band knows", "the same family and tone as the correct choice",
-                 "For a feeling word, other feelings of the same kind (for a bad mood: worried, bored, sad; never "
-                 "happy or excited)", "for an action word, other actions that could happen in the same place",
+                 "For a feeling word, other feelings of the same kind (for a bad mood: worried, bored, sad)",
+                 "for an action word, other actions that could happen in the same place",
                  "for a describing word, other words that describe the same kind of thing",
+                 # fix round 3: opposites made the key easy to find; only an antonym key is an opposite
+                 "A wrong choice is never simply the opposite of the correct choice (only an antonym question's "
+                 "correct choice is an opposite)", "for a word about great age, something old but not that old",
+                 "for a bad mood, a different bad mood", "for a good state, a different good state",
                  "Each wrong choice is ruled out by one specific detail in the question",
                  "never nonsense, joke or obviously unrelated choices"):
         assert rule in near_miss, rule
@@ -223,6 +228,8 @@ def test_question_batch_prompt_contents():
     assert "a related but different behaviour, never the opposite behaviour" in lines["scenario"]
     assert "without using the definition's words or a synonym" in lines["scenario"]
     assert "the correct choice is never the odd one out" in lines["antonym"]
+    assert ("other describing words for the same kind of thing (or, for a noun or verb, other words of the same "
+            "kind) that are not synonyms") in lines["synonym"]
     # gone: the meaning clue in fill_blank, the "not a feeling that could describe the person" rule (it pushed the
     # writer to unrelated choices), and the replacement-pair recipe that modelled nonsense misuses
     for old in ("states the meaning in other plain words", "makes the sentence false or silly",

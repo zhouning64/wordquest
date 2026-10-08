@@ -85,7 +85,7 @@ ANSWER_CHECK_SCHEMA: dict = _obj(
                 {
                     "qid": _str(),
                     "passes": _bool_list(),  # choice questions: one verdict per choice, in order; spell_it: []
-                    "tempting": _bool_list(),  # choice questions: would a half-knowing learner pick it; spell_it: []
+                    "tempting": _bool_list(),  # choice questions: same kind as the right answer? spell_it: []
                     "chosen_index": {"type": "integer", "enum": list(_INDEX_ENUM)},
                     "fill": _str(),
                     "alternatives": _str_list(),  # spell_it: other words that fit the blank and hint; else []
@@ -113,7 +113,8 @@ class CheckResult(BaseModel):
     """One blind-check answer for the question with the given qid.
 
     passes: for a choice question, whether a careful teacher would mark each choice right (in choice order);
-    tempting: for a choice question, whether a learner in the band who half-knows the word could pick each choice;
+    tempting: for a choice question, whether each choice is the same kind of word or situation as the right answer
+    (a near miss, not the opposite, a joke or nonsense);
     alternatives: for spell_it, every other word or form the checker found that fits the blank and the hint."""
 
     qid: str

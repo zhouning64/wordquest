@@ -288,26 +288,15 @@ _CUE_PARTS = re.compile(
     r"\)\s*\.?\s*$",
     re.IGNORECASE,
 )
-# An explanation that points at a choice by position: "the first sentence", "the second definition",
-# "the last one", "option B", "Answer: B", "choice 2", "sentence 0", "B is correct", "(A)", "(a)", "A)".
+# An explanation that points at a choice by position (Q9 drops it; choices are shuffled): "the first sentence",
+# "the second definition", "the last one", "the 2nd one", "option B", "Answer: B", "choice 2", "sentence 0",
+# "B is correct", "(A)", "(a)", "A)".
 _POSITION_REF = re.compile(
-    r"(?i:\bthe\s+(?:first|second|third|fourth|last)\s+"
+    r"(?i:\bthe\s+(?:first|second|third|fourth|last|1st|2nd|3rd|4th)\s+"
     r"(?:sentence|choice|option|answer|definition|one\b(?!\s+(?:to|who|that)\b)))"
     r"|(?i:\b(?:option|choice|answer|sentence|definition))(?:\s*:\s*|\s+)(?:[A-D]|[0-4])\b"
     r"|\b[A-D]\s+is\s+(?i:correct|right|the\s+(?:best\s+)?answer)\b"
     r"|\(?\b[A-D]\)|(?i:\([a-d]\))"
-)
-# A positional reference that _tidy can rewrite as "the correct sentence|choice|option|answer|definition" ("Only
-# the first sentence shows…", "Sentence 1 uses…", "only sentence C").
-_POSITION_FIXABLE = re.compile(
-    r"(?i:\bthe\s+(?:first|second|third|fourth|last)\s+"
-    r"(?P<ordinal>sentence|choice|option|answer|definition)\b)"
-    r"|(?i:\b(?:the\s+)?(?P<numbered>sentence|choice|option|definition))\s+(?:[0-4]|[A-D])\b"
-)
-# Fail-closed repair: any other ordinal, negation or judgement word anywhere in the explanation ("…, but the second
-# never does", "The first sentence is, however, not right") might make the rewrite false, so Q9 rejects it instead.
-_REPAIR_BLOCKER = re.compile(
-    r"(?i:\b(?:first|second|third|fourth|last|not|never|no|cannot|wrong|incorrect|false)\b|n['’]t\b)"
 )
 # A fill_blank prompt that ends with a parenthetical: a definition or cue that gives the answer away (Q2).
 _PAREN_AT_END = re.compile(r"\([^()]*\)\s*[.!?]?\s*$")
@@ -340,30 +329,11 @@ def _add_letter_hint(prompt: str, answer: str) -> str:
     return f"{prompt[: m.start()].rstrip()} {cue}"
 
 
-def _the_correct(m: re.Match[str]) -> str:
-    before = m.string[: m.start()].rstrip()
-    article = "The" if not before or before[-1] in ".!?" else "the"
-    return f"{article} correct {(m.group('ordinal') or m.group('numbered')).lower()}"
-
-
-def _repair_position(explanation: str) -> str:
-    """Rewrite an explanation's one reference to a choice by position as "the correct sentence" (etc.), fail-closed:
-    only when it is the only positional reference and the rest of the explanation has no other ordinal and no
-    negation or judgement word (_REPAIR_BLOCKER), and the result fits the limit. Otherwise it is left for Q9."""
-    if sum(1 for _ in _POSITION_REF.finditer(explanation)) != 1:
-        return explanation
-    m = _POSITION_FIXABLE.search(explanation)
-    if m is None or _REPAIR_BLOCKER.search(explanation[: m.start()] + " " + explanation[m.end() :]):
-        return explanation
-    fixed = explanation[: m.start()] + _the_correct(m) + explanation[m.end() :]
-    return fixed if len(fixed) <= EXPLANATION_MAX else explanation
-
-
 def _tidy(q: RawQuestion, *, legacy: bool = False) -> RawQuestion:
     """Trim whitespace, normalize any run of 3+ underscores to "___", normalize spell_it answers. AI questions
-    (not legacy) also get typographic hyphens normalized and are repaired where it is safe: a positional
-    explanation, a spell_it cue missing "means:", and the first-letter hint added to the spell_it cue so the
-    blind check sees it."""
+    (not legacy) also get typographic hyphens normalized, a spell_it cue missing "means:" repaired, and the
+    first-letter hint added to the spell_it cue so the blind check sees it. Explanations are never rewritten: one
+    that refers to a choice by position is dropped by Q9."""
     if not legacy:
         q = q.model_copy(update={
             "prompt": q.prompt.translate(_HYPHEN_FIX),
@@ -376,8 +346,6 @@ def _tidy(q: RawQuestion, *, legacy: bool = False) -> RawQuestion:
         "choices": [c.strip() for c in q.choices],
         "explanation": q.explanation.strip(),
     }
-    if not legacy:
-        update["explanation"] = _repair_position(update["explanation"])
     if q.type == "spell_it":
         answers: list[str] = []
         for a in q.accepted_answers:

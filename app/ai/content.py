@@ -46,8 +46,9 @@ MIN_TIER2 = 1
 # The blind check tests every choice, so it gets more thinking time; the card and batch calls use the configured
 # generation effort (LLM_REASONING_EFFORT).
 CHECK_REASONING_EFFORT = "high"
-# A choice question is kept only if at least this many of its 3 wrong choices could tempt a learner in the band who
-# half-knows the word (the checker's `tempting` ratings), so it cannot be passed by elimination.
+# A choice question is kept only if the checker rates at least this many of its 3 wrong choices `tempting` (the same
+# kind of word or situation as the right answer: a near miss, not the opposite, a joke or nonsense), so it cannot be
+# passed by elimination.
 MIN_TEMPTING_WRONG = 2
 
 
