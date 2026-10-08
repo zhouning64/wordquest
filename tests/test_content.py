@@ -453,6 +453,40 @@ async def test_only_the_checker_call_asks_for_high_reasoning_effort(logs):
     assert [r["call"] for r in read_jsonl(logs[3])] == [LEARN_CARD, QUESTION_BATCH, ANSWER_CHECK]
 
 
+async def test_generation_reasoning_effort_applies_to_the_card_and_batch_calls_not_the_checker(logs):
+    llm = FakeLLM({LEARN_CARD: [card_dict()], QUESTION_BATCH: [{"questions": [rq("meaning")]}],
+                   ANSWER_CHECK: [{"results": [ok("q1", 0)]}]})
+    g = ContentGenerator(llm, model_name="test-model", rejection_log=logs[0], usage_log=logs[1],
+                         generation_reasoning_effort="medium")
+    card = await g.make_card(WORD, BAND)
+    qs = await g.make_questions(WORD, BAND, card, {"meaning": 1}, [], 1)
+    assert len(qs) == 1
+    assert [c["name"] for c in llm.calls] == [LEARN_CARD, QUESTION_BATCH, ANSWER_CHECK]
+    assert llm.calls[0]["reasoning_effort"] == "medium"
+    assert llm.calls[1]["reasoning_effort"] == "medium"
+    assert llm.calls[2]["reasoning_effort"] == "high"  # the blind check keeps its own setting
+
+
+async def test_without_generation_reasoning_effort_the_card_and_batch_calls_pass_no_such_keyword(logs):
+    class KwargsLLM(FakeLLM):
+        """Records the exact keyword names of every call (FakeLLM would hide an explicit reasoning_effort=None)."""
+
+        seen: list[set[str]] = []
+
+        async def chat_json(self, **kwargs):
+            self.seen.append(set(kwargs))
+            return await super().chat_json(**kwargs)
+
+    KwargsLLM.seen = []
+    llm = KwargsLLM({LEARN_CARD: [card_dict()], QUESTION_BATCH: [{"questions": [rq("meaning")]}],
+                     ANSWER_CHECK: [{"results": [ok("q1", 0)]}]})
+    g = gen(llm, logs)
+    card = await g.make_card(WORD, BAND)
+    await g.make_questions(WORD, BAND, card, {"meaning": 1}, [], 1)
+    base = {"name", "schema", "system", "user"}
+    assert KwargsLLM.seen == [base, base, base | {"reasoning_effort"}]
+
+
 @pytest.mark.parametrize("fill", ["frugal", "  FRUGAL ", "Frugal"])
 async def test_spell_it_fill_is_normalized(logs, fill):
     card = make_card()

@@ -4,6 +4,7 @@ Run from the repo root (reads CEREBRAS_* settings from .env):
 
     .venv/bin/python scripts/smoke_ai.py                      # "tenacious" and "in lieu of", band 6-8
     .venv/bin/python scripts/smoke_ai.py --band 3-5 brave curious
+    .venv/bin/python scripts/smoke_ai.py --reasoning-effort medium tenacious   # card + question calls at medium
 
 For each word it makes one Learn card and one initial question batch (with the blind answer-key check),
 then prints the card, the questions that survived validation and checking, and the token usage.
@@ -176,7 +177,9 @@ async def run_words(generator: Any, words: list[str], band: str, out: TextIO | N
     return results
 
 
-async def _amain(settings: Settings, words: list[str], band: str, out: TextIO) -> int:
+async def _amain(
+    settings: Settings, words: list[str], band: str, out: TextIO, reasoning_effort: str | None = None
+) -> int:
     logs = settings.data_dir / "logs"
     rejections = logs / "ai-rejections.jsonl"
     client = CerebrasClient(
@@ -192,8 +195,10 @@ async def _amain(settings: Settings, words: list[str], band: str, out: TextIO) -
         model_name=client.model,
         rejection_log=JsonlLog(rejections),
         usage_log=JsonlLog(logs / "ai-usage.jsonl"),
+        generation_reasoning_effort=reasoning_effort,
     )
-    print(f"Model {client.model} · band {band} · words: {', '.join(words)}", file=out)
+    reasoning = f" · reasoning {reasoning_effort}" if reasoning_effort else ""
+    print(f"Model {client.model} · band {band}{reasoning} · words: {', '.join(words)}", file=out)
     try:
         results = await run_words(generator, words, band, out)
     finally:
@@ -211,6 +216,13 @@ def main(argv: list[str] | None = None, out: TextIO | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate WordQuest content for a few words against the real Cerebras API.")
     parser.add_argument("words", nargs="*", help=f"words or phrases to generate (default: {', '.join(DEFAULT_WORDS)})")
     parser.add_argument("--band", choices=list(BANDS), default=DEFAULT_BAND, help="grade band (default: 6-8)")
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=["low", "medium", "high"],
+        default=None,
+        help="reasoning effort for the card and question calls (default: the model's own default); "
+        "the answer check always uses high",
+    )
     args = parser.parse_args(argv)
     out = out or sys.stdout
     settings = Settings()
@@ -221,7 +233,7 @@ def main(argv: list[str] | None = None, out: TextIO | None = None) -> int:
     register_secrets(settings.secret_values())
     settings.ensure_dirs()
     words = [w.strip().lower() for w in args.words if w.strip()] or list(DEFAULT_WORDS)
-    return asyncio.run(_amain(settings, words, args.band, out))
+    return asyncio.run(_amain(settings, words, args.band, out, args.reasoning_effort))
 
 
 if __name__ == "__main__":

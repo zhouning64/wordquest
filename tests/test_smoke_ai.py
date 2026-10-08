@@ -257,13 +257,17 @@ class FakeClient:
         pass
 
 
+generator_kwargs: list[dict] = []  # the keyword arguments main() built the ContentGenerator with
+
+
 def run_main(smoke, monkeypatch, tmp_path, stub, argv, key="csk-test-key-1234"):
     FakeClient.created = []
     monkeypatch.chdir(tmp_path)  # no .env here
     monkeypatch.setenv("CEREBRAS_API_KEY", key)
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "wq-store"))
     monkeypatch.setattr(smoke, "CerebrasClient", FakeClient)
-    monkeypatch.setattr(smoke, "ContentGenerator", lambda *args, **kwargs: stub)
+    generator_kwargs.clear()
+    monkeypatch.setattr(smoke, "ContentGenerator", lambda *args, **kwargs: generator_kwargs.append(kwargs) or stub)
     out = io.StringIO()
     return smoke.main(argv, out), out.getvalue()
 
@@ -301,3 +305,28 @@ def test_main_strips_whitespace_around_the_key_before_using_it(tmp_path, monkeyp
     code, _ = run_main(smoke, monkeypatch, tmp_path, StubGenerator(fail_words=set()), ["tenacious"], key="  csk-test-key-1234 \n")
     assert code == 0
     assert [c["api_key"] for c in FakeClient.created] == ["csk-test-key-1234"]
+
+
+def test_main_passes_reasoning_effort_to_the_generator_and_shows_it_in_the_header(tmp_path, monkeypatch):
+    smoke = load_smoke()
+    code, text = run_main(smoke, monkeypatch, tmp_path, StubGenerator(fail_words=set()),
+                          ["--reasoning-effort", "medium", "tenacious"])
+    assert code == 0
+    assert generator_kwargs[0]["generation_reasoning_effort"] == "medium"
+    assert text.splitlines()[0] == "Model fake-model · band 6-8 · reasoning medium · words: tenacious"
+
+
+def test_main_without_reasoning_effort_passes_none_and_omits_it_from_the_header(tmp_path, monkeypatch):
+    smoke = load_smoke()
+    code, text = run_main(smoke, monkeypatch, tmp_path, StubGenerator(fail_words=set()), ["tenacious"])
+    assert code == 0
+    assert generator_kwargs[0]["generation_reasoning_effort"] is None
+    assert text.splitlines()[0] == "Model fake-model · band 6-8 · words: tenacious"
+
+
+def test_main_rejects_an_unknown_reasoning_effort(tmp_path, monkeypatch):
+    smoke = load_smoke()
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        smoke.main(["--reasoning-effort", "extreme"])
+    assert exc.value.code == 2

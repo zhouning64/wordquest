@@ -178,11 +178,21 @@ class ContentGenerator:
         model_name: str,
         rejection_log: JsonlLog | None = None,
         usage_log: JsonlLog | None = None,
+        generation_reasoning_effort: str | None = None,
     ) -> None:
         self.llm = llm
         self.model_name = model_name
         self.rejection_log = rejection_log
         self.usage_log = usage_log
+        # sent on the learn-card and question-batch calls only; None leaves the model default. The blind
+        # answer check always uses CHECK_REASONING_EFFORT.
+        self.generation_reasoning_effort = generation_reasoning_effort
+
+    def _generation_kwargs(self) -> dict[str, str]:
+        """reasoning_effort for the card and batch calls, only when one was asked for (else the call is unchanged)."""
+        if self.generation_reasoning_effort is None:
+            return {}
+        return {"reasoning_effort": self.generation_reasoning_effort}
 
     # ---- logging helpers -------------------------------------------------
     def _log_usage(self, word: str, band: str, call: str, result: LLMResult) -> None:
@@ -199,7 +209,7 @@ class ContentGenerator:
     async def make_card(self, word: str, band: str) -> LearnCard:
         system, user = learn_card_prompt(word, band)
         result = await self.llm.chat_json(
-            name=LEARN_CARD, schema=LEARN_CARD_SCHEMA, system=system, user=user
+            name=LEARN_CARD, schema=LEARN_CARD_SCHEMA, system=system, user=user, **self._generation_kwargs()
         )
         self._log_usage(word, band, LEARN_CARD, result)
         try:
@@ -231,7 +241,7 @@ class ContentGenerator:
         # 1) batch call
         system, user = question_batch_prompt(word, band, card, mix, existing_prompts)
         result = await self.llm.chat_json(
-            name=QUESTION_BATCH, schema=QUESTION_BATCH_SCHEMA, system=system, user=user
+            name=QUESTION_BATCH, schema=QUESTION_BATCH_SCHEMA, system=system, user=user, **self._generation_kwargs()
         )
         self._log_usage(word, band, QUESTION_BATCH, result)
         try:
