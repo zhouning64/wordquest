@@ -327,7 +327,7 @@ This matcher is deliberately permissive and is used for content checks only. Gra
 
 ### 7.8 Cost guardrails
 
-Measured with `qwen-3.8-27b` at medium reasoning: per word × band ~6k prompt + ~27k completion tokens (Learn card ~7k, question batch ~13k, check ~6.5k), about 4.7¢ (~$28 for a 600-word list in one band), in roughly 3–4 calls. Only the Parent area initiates generation; top-ups are limited to one per word × band per day and by the 40-question cap; `AI_DAILY_CALL_LIMIT` caps everything. Images are generated once per word × band × version.
+Measured with `qwen-3.8-27b` at medium reasoning: one pass (Learn card ~7k, question batch ~13k, check ~6.5k completion tokens plus ~6k prompt) costs about 4.7¢; with the distractor floor (§7.3, `MIN_TEMPTING_WRONG = 2`) most words need replacement batches, and the in-app checkpoint run (2026-10-08, 24 word × band items, retries included) measured ~6 calls, ~13k prompt + ~72k completion tokens and about **12¢ per word × band** (~$70–90 for a 600-word list in one band; at the default `AI_DAILY_CALL_LIMIT` of 2000 about 300 items per day). Only the Parent area initiates generation; top-ups are limited to one per word × band per day and by the 40-question cap; `AI_DAILY_CALL_LIMIT` caps everything. Images are generated once per word × band × version.
 
 ## 8. Learning engine
 

@@ -149,10 +149,13 @@ In the Parent area:
 
 Cost and rate controls (all in `.env`):
 
-- Cost with the default model: about 5¢ per word per grade band, so a 600-word list costs about $28 for one band
-  (pictures are extra, see [Pictures](#pictures-zai)). Each word takes roughly 3–4 Cerebras calls (Learn card,
-  question batch and answer check, plus a replacement batch now and then). `AI_DAILY_CALL_LIMIT` counts calls, not
-  tokens, so it is unaffected by the model choice.
+- Cost with the default model: about 12¢ per word per grade band, measured in the app at the content checkpoint
+  (2026-10-08, 24 words, retries included), so a 600-word list costs roughly $70–90 for one band (pictures are
+  extra, see [Pictures](#pictures-zai)). The strict checks drop many questions (wrong choices that are too easy,
+  more than one defensible answer), so a word takes about 6 Cerebras calls on average: a Learn card, then question
+  batches and answer checks until the pool is big enough (up to 5 attempts).
+- At about 6 calls per word, the default `AI_DAILY_CALL_LIMIT` of 2000 covers roughly 300 word × band items a day;
+  raise it before adding a very large list if you want it ready the same day.
 - `AI_DAILY_CALL_LIMIT` (default 2000) caps outbound AI requests (text and pictures) per UTC day. When it is
   reached, waiting words pause until tomorrow and the Parent area says "Paused until tomorrow".
 - `GEN_CONCURRENCY` (default 3) is how many words are prepared in parallel. Lower it if the Cerebras free tier
