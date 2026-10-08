@@ -17,6 +17,7 @@ from app.ai.content import ContentGenerator
 from app.ai.images import make_image_provider
 from app.ai.images.base import ImageProvider
 from app.ai.llm import CerebrasClient, LLMClient
+from app.api.learner import router as learner_router
 from app.auth import Auth, require_site
 from app.auth import router as auth_router
 from app.config import Settings
@@ -236,6 +237,7 @@ def create_app(
 
     app.add_middleware(OpenAccessWarning, settings=settings)
     app.include_router(auth_router)
+    app.include_router(learner_router)
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
     @app.get("/", include_in_schema=False)
