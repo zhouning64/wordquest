@@ -1,7 +1,7 @@
 // Renders one question (choices or a text box) and reports the learner's answer.
 // Shared by the session screen and the lock-in check. Feedback is drawn by the caller.
 import { h, mount } from "./ui.js";
-import { gradeTyped, shuffleChoices, speechText } from "./engine.js";
+import { gradeTyped, MAX_EVENT_MS, shuffleChoices, speechText } from "./engine.js";
 import { speakButton } from "./speech.js";
 
 export const TYPE_LABEL = {
@@ -40,7 +40,7 @@ export function mountQuestion(container, q, { label, counter = "", allowUnsure =
     done = true;
     disableAll();
     if (unsureBtn) unsureBtn.disabled = true;
-    result.ms = Math.max(0, Date.now() - startedAt);
+    result.ms = Math.min(MAX_EVENT_MS, Math.max(0, Date.now() - startedAt));   // the server rejects a larger ms
     onAnswered(result, feedback);
   };
 

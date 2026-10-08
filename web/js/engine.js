@@ -7,6 +7,7 @@ export const REASK_GAP = 5;            // a re-ask goes 5 positions after the mi
 export const MAX_REASKS_PER_WORD = 2;
 export const MAX_CHECK_ATTEMPTS = 2;
 export const CHECK_PASS = 2;           // lock-in check passes with at least 2 correct
+export const MAX_EVENT_MS = 86_400_000; // the server rejects an event whose ms is larger (an item left open overnight)
 
 // ---- typed-answer grading: mirror of app/learning/grading.py ----
 export function normalizeAnswer(s) {
@@ -100,6 +101,7 @@ export class SessionEngine {
     this.words = payload.words || {};
     this.queue = (payload.queue || []).map((item) => ({ ...item }));
     this.pos = 0;
+    this.shown = new Set();   // ids of questions already put in front of the learner (main, re-ask, check)
     this.shownAt = now();
     this.wordState = {};
     for (const [w, d] of Object.entries(this.words)) {
@@ -112,6 +114,16 @@ export class SessionEngine {
     this.newWords = [];
     this.starsUp = [];
     this.missed = [];
+    this._enter();
+  }
+
+  // Called whenever pos changes: drops fallback re-asks whose question was shown meanwhile (e.g. by a
+  // lock-in check) without grading them, then records the new current question as shown.
+  _enter() {
+    for (let it = this.current(); it && it.fallback && this.shown.has(it.question.id); it = this.current()) this.pos += 1;
+    const item = this.current();
+    if (item && item.question) this.shown.add(item.question.id);
+    this.shownAt = this.now();
   }
 
   current() {
@@ -131,7 +143,7 @@ export class SessionEngine {
     if (!item) return;
     if (item.kind === "intro" && !this.newWords.includes(item.word)) this.newWords.push(item.word);
     this.pos += 1;
-    this.shownAt = this.now();
+    this._enter();
   }
 
   // Moves past the current item without grading it (e.g. an item whose word data is missing).
@@ -139,7 +151,7 @@ export class SessionEngine {
     if (!this.current()) return;
     this.counts.skipped += 1;
     this.pos += 1;
-    this.shownAt = this.now();
+    this._enter();
   }
 
   answerQuestion(correct, unsure = false) {
@@ -150,7 +162,7 @@ export class SessionEngine {
     item.answered = true;
     const ok = Boolean(correct) && !unsure;
     const word = item.word;
-    const ms = Math.max(0, Math.round(this.now() - this.shownAt));
+    const ms = Math.min(MAX_EVENT_MS, Math.max(0, Math.round(this.now() - this.shownAt)));
     this.counts.answered += 1;
     if (ok) this.counts.correct += 1;
     if (unsure) this.counts.unsure += 1;
@@ -168,16 +180,26 @@ export class SessionEngine {
   }
 
   // Inserts the next unused re-ask reserve REASK_GAP positions after the current item (or at the end).
+  // Spec §8.1: when the word has no (more) re-ask reserves, a lock-in question the learner has not seen
+  // yet stands in for it (a "fallback" re-ask, skipped later if a check shows it first); none left = none.
   insertReask(word) {
     if (this.gaveUp.has(word)) return false;
     const used = this.reasksUsed[word] || 0;
     if (used >= MAX_REASKS_PER_WORD) return false;
-    const reasks = (this.words[word] && this.words[word].reserves && this.words[word].reserves.reasks) || [];
-    const q = reasks[used];
-    if (!q) return false;
+    const reserves = (this.words[word] && this.words[word].reserves) || {};
+    let item = null;
+    const q = (reserves.reasks || [])[used];
+    if (q) {
+      item = { kind: "question", word, question: q, reask: true };
+    } else {
+      const queued = new Set(this.queue.map((it) => it.question && it.question.id));
+      const spare = [].concat(...(reserves.checks || [])).find((c) => c && !this.shown.has(c.id) && !queued.has(c.id));
+      if (spare) item = { kind: "question", word, question: spare, reask: true, fallback: true };
+    }
+    if (!item) return false;
     this.reasksUsed[word] = used + 1;
     const at = Math.min(this.pos + REASK_GAP, this.queue.length);
-    this.queue.splice(at, 0, { kind: "question", word, question: q, reask: true });
+    this.queue.splice(at, 0, item);
     return true;
   }
 
@@ -196,7 +218,9 @@ export class SessionEngine {
   // Attempt 1 uses reserve set 1, attempt 2 uses set 2. Does not consume the attempt (recordCheck does).
   startCheck(word) {
     if (!this.canCheck(word)) return null;
-    return this.words[word].reserves.checks[this.checksUsed(word)].slice();
+    const set = this.words[word].reserves.checks[this.checksUsed(word)].slice();
+    for (const c of set) this.shown.add(c.id);
+    return set;
   }
 
   recordCheck(word, correctCount) {

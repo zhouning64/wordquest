@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  SessionEngine, gradeTyped, highlightParts, levenshtein, normalizeAnswer, shuffleChoices, speechText,
+  MAX_EVENT_MS, SessionEngine, gradeTyped, highlightParts, levenshtein, normalizeAnswer, shuffleChoices, speechText,
 } from "../../web/js/engine.js";
 import { seededRng } from "../../web/js/ui.js";
 
@@ -141,8 +141,8 @@ test("at most 2 re-asks per word, used in reserve order", () => {
   assert.equal(e.isFinished(), true);
 });
 
-test("no re-ask when the word has no re-ask reserves, and none after a correct answer", () => {
-  const e = new SessionEngine(payload({ queue: [qi("a"), qi("b")], words: { a: wordData("a", { reasks: 0 }), b: wordData("b") } }));
+test("no re-ask when the word has no re-ask or check reserves, and none after a correct answer", () => {
+  const e = new SessionEngine(payload({ queue: [qi("a"), qi("b")], words: { a: wordData("a", { reasks: 0, checks: [0, 0] }), b: wordData("b") } }));
   assert.equal(e.answerQuestion(false).reaskInserted, false);
   e.advance();
   assert.equal(e.answerQuestion(true).reaskInserted, false);
@@ -269,10 +269,10 @@ test("stats: accuracy and up to 5 keep-practicing words, lowest stars first", ()
   const words = {};
   const queue = [];
   [3, 1, 4, 2, 5, 3].forEach((stage, i) => {
-    words[`m${i}`] = wordData(`m${i}`, { stage, last: TODAY, reasks: 0 });
+    words[`m${i}`] = wordData(`m${i}`, { stage, last: TODAY, reasks: 0, checks: [0, 0] });
     queue.push(qi(`m${i}`));
   });
-  words.ok = wordData("ok", { reasks: 0 });
+  words.ok = wordData("ok", { reasks: 0, checks: [0, 0] });
   queue.push(qi("ok"));
   const e = new SessionEngine(payload({ queue, words }));
   for (let i = 0; i < 6; i++) { e.answerQuestion(false); e.advance(); }
@@ -281,6 +281,145 @@ test("stats: accuracy and up to 5 keep-practicing words, lowest stars first", ()
   assert.equal(s.accuracy, 14);
   assert.deepEqual(s.keepPracticing.map((k) => k.word), ["m1", "m3", "m0", "m5", "m2"]);
   assert.deepEqual(s.keepPracticing[0], { word: "m1", stage: 1 });
+});
+
+// ---- fix round 1: re-ask fallback (spec §8.1) and timing clamp ----
+// A word whose pool has no spare questions has reasks: [] — a miss then reuses a lock-in question
+// the learner has not seen yet; a starter-style word has the same 3 questions in both check sets.
+const starterWord = (word) => {
+  const set = () => ["x1", "x2", "x3"].map((n) => q(`${word}-${n}`, word));
+  const d = wordData(word, { reasks: 0 });
+  d.reserves.checks = [set(), set()];
+  return d;
+};
+
+test("a word with no re-ask reserves gets an unseen lock-in question as its re-ask after a miss", () => {
+  const e = new SessionEngine(payload({ queue: [qi("a"), ...filler(7)], words: { a: wordData("a", { reasks: 0 }), ...fillerWords(7) } }));
+  const r = e.answerQuestion(false);
+  assert.equal(r.reaskInserted, true);
+  assert.equal(e.queue.length, 9);
+  assert.deepEqual(e.queue[5], { kind: "question", word: "a", question: q("a-c11", "a"), reask: true, fallback: true });
+  assert.deepEqual(queueIds(e).slice(0, 6), ["a-main", "w0-main", "w1-main", "w2-main", "w3-main", "a-c11"]);
+});
+
+test("a fallback re-ask goes to the end when fewer than 5 items remain", () => {
+  const e = new SessionEngine(payload({ queue: [qi("a"), ...filler(2)], words: { a: wordData("a", { reasks: 0 }), ...fillerWords(2) } }));
+  e.answerQuestion(false);
+  assert.deepEqual(queueIds(e), ["a-main", "w0-main", "w1-main", "a-c11"]);
+});
+
+test("a fallback re-ask is skipped (not graded) once a lock-in check has shown the same question", () => {
+  const e = new SessionEngine(payload({ queue: [qi("a")], words: { a: wordData("a", { reasks: 0 }) } }));
+  e.answerQuestion(false);
+  assert.deepEqual(queueIds(e), ["a-main", "a-c11"]);
+  e.startCheck("a");
+  assert.equal(e.recordCheck("a", 3), "pass");
+  e.advance();
+  assert.equal(e.isFinished(), true, "the shown question is not asked again");
+  const s = e.stats();
+  assert.equal(s.answered, 1);
+  assert.equal(s.skipped, 0, "an engine-level skip is not a learner skip");
+});
+
+test("a fallback re-ask that has not been shown meanwhile is asked normally", () => {
+  const e = new SessionEngine(payload({ queue: [qi("a")], words: { a: wordData("a", { reasks: 0 }) } }));
+  e.answerQuestion(false);
+  e.advance();
+  assert.equal(e.current().question.id, "a-c11");
+  assert.equal(e.current().reask, true);
+  assert.equal(e.answerQuestion(true).duplicate, undefined);
+  assert.equal(e.stats().answered, 2);
+});
+
+test("stale fallback re-asks are skipped in a row and the next real item is shown", () => {
+  const e = new SessionEngine(payload({
+    queue: [qi("a"), qi("w0")], words: { a: starterWord("a"), ...fillerWords(1) },
+  }));
+  e.answerQuestion(false);
+  e.advance();
+  e.answerQuestion(true);
+  e.advance();                       // re-ask a-x1 is current now
+  assert.equal(e.current().question.id, "a-x1");
+  e.answerQuestion(false);           // missed again: second fallback goes to the end
+  assert.deepEqual(queueIds(e), ["a-main", "w0-main", "a-x1", "a-x2"]);
+  e.startCheck("a");                 // shows x1, x2, x3
+  e.recordCheck("a", 3);
+  e.advance();
+  assert.equal(e.isFinished(), true);
+});
+
+test("fallback re-asks use distinct questions, never one that is queued or shown, at most 2 per word", () => {
+  const e = new SessionEngine(payload({
+    queue: [qi("a"), qi("a", "a-x1")],   // x1 is already queued as a regular question
+    words: { a: starterWord("a") },
+  }));
+  e.answerQuestion(false);
+  assert.deepEqual(queueIds(e), ["a-main", "a-x1", "a-x2"], "x1 is skipped as a candidate");
+  e.advance();
+  assert.equal(e.answerQuestion(false).reaskInserted, true);
+  assert.deepEqual(queueIds(e), ["a-main", "a-x1", "a-x2", "a-x3"]);
+  e.advance();
+  assert.equal(e.answerQuestion(false).reaskInserted, false, "cap of 2 per word counts fallback re-asks");
+  assert.deepEqual(queueIds(e), ["a-main", "a-x1", "a-x2", "a-x3"]);
+});
+
+test("regular re-ask reserves are used first, then the fallback fills the second slot", () => {
+  const e = new SessionEngine(payload({ queue: [qi("a")], words: { a: wordData("a", { reasks: 1 }) } }));
+  assert.equal(e.answerQuestion(false).reaskInserted, true);
+  e.advance();
+  assert.equal(e.current().question.id, "a-r1");
+  assert.equal(e.current().fallback, undefined);
+  assert.equal(e.answerQuestion(false).reaskInserted, true);
+  e.advance();
+  assert.equal(e.current().question.id, "a-c11");
+  assert.equal(e.current().fallback, true);
+  assert.equal(e.answerQuestion(false).reaskInserted, false);
+});
+
+test("no re-ask when every lock-in question has been shown, or the word has none", () => {
+  const e = new SessionEngine(payload({
+    queue: [qi("a"), qi("b")], words: { a: wordData("a", { reasks: 0 }), b: wordData("b", { reasks: 0, checks: [0, 0] }) },
+  }));
+  e.startCheck("a");
+  e.recordCheck("a", 1);
+  e.startCheck("a");                 // set 2 shown as well
+  assert.equal(e.answerQuestion(false).reaskInserted, false);
+  e.advance();
+  assert.equal(e.answerQuestion(false).reaskInserted, false, "no check questions at all: no crash, no re-ask");
+  assert.equal(e.queue.length, 2);
+});
+
+test("giving up cancels pending fallback re-asks and blocks new ones", () => {
+  const e = new SessionEngine(payload({
+    queue: [qi("a"), qi("w0"), qi("a", "a-later"), ...filler(5).slice(1)],
+    words: { a: wordData("a", { reasks: 0 }), ...fillerWords(5) },
+  }));
+  e.answerQuestion(false);
+  assert.ok(queueIds(e).includes("a-c11"));
+  assert.equal(e.recordCheck("a", 0), "retry");
+  assert.equal(e.recordCheck("a", 1), "giveup");
+  assert.ok(!queueIds(e).includes("a-c11"), "pending fallback re-ask removed");
+  assert.ok(queueIds(e).includes("a-later"), "regular questions for the word stay");
+  e.advance();
+  e.advance();
+  assert.equal(e.current().question.id, "a-later");
+  assert.equal(e.answerQuestion(false).reaskInserted, false);
+});
+
+test("a fallback re-ask never touches the payload and the payload questions stay unmodified", () => {
+  const p = payload({ queue: [qi("a")], words: { a: wordData("a", { reasks: 0 }) } });
+  const before = JSON.stringify(p);
+  const e = new SessionEngine(p);
+  e.answerQuestion(false);
+  assert.equal(JSON.stringify(p), before);
+});
+
+test("ms is clamped to what the server accepts (an item left open overnight)", () => {
+  let t = 0;
+  const e = new SessionEngine(payload({ queue: [qi("a")], words: { a: wordData("a") } }), { now: () => t });
+  t = 40 * 3600 * 1000;
+  assert.equal(e.answerQuestion(true).ms, MAX_EVENT_MS);
+  assert.equal(MAX_EVENT_MS, 86_400_000);
 });
 
 // ---- grading helper: mirror of grading.py ----

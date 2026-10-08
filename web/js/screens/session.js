@@ -12,6 +12,23 @@ import * as results from "./results.js";
 
 export const DEBUG_SECONDS_KEY = "wq-debug-seconds";   // devtools-only override of the session length
 
+export const MAX_ACTIVE_MINUTES = 600;   // /finish rejects a larger active_minutes
+
+// Whole minutes since startedAt, never negative and never above what the server accepts.
+export function activeMinutes(startedAt, now = Date.now()) {
+  return Math.min(MAX_ACTIVE_MINUTES, Math.max(0, Math.round((now - startedAt) / 60000)));
+}
+
+// Spec §10: pending events are flushed before finish. drain() resolves false instead of throwing when an
+// upload fails, so check what is left: with events still pending the session is NOT finished on the
+// server (it would score without them) and null is returned — the caller shows the offline results and
+// the events stay in localStorage for the next visit. postFinish() errors propagate (401 handling).
+export async function flushThenFinish(queue, postFinish) {
+  await queue.drain();
+  if (queue.pending > 0) return null;
+  return postFinish();
+}
+
 export function formatClock(totalSeconds) {
   const s = Math.max(0, Math.floor(totalSeconds));
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
@@ -229,11 +246,10 @@ export function render(root, ctx) {
     }
     screenChanged();
     mount(body, h("div", { class: "card center" }, h("p", null, "Saving your results…")));
-    const activeMinutes = Math.round((Date.now() - startedAt) / 60000);
-    let server = null;
+    const minutes = activeMinutes(startedAt);
+    let server = null;   // stays null when /finish was not reached (offline or events still pending): local results
     try {
-      await queue.drain();
-      server = await ctx.api.post(`/api/sessions/${encodeURIComponent(sid)}/finish`, { active_minutes: activeMinutes });
+      server = await flushThenFinish(queue, () => ctx.api.post(`/api/sessions/${encodeURIComponent(sid)}/finish`, { active_minutes: minutes }));
     } catch (err) {
       if (err && err.status === 401) {
         teardown();
