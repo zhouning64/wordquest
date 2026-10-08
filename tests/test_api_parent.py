@@ -693,3 +693,20 @@ def test_import_treats_an_unsafe_image_key_as_missing(client, repo, crafted_key)
     assert (brave.status, brave.image_status, brave.image_key) == ("ready", "none", None)
     assert brave.draft_version is None                              # every later import step still ran
     assert repo.get_job("learn:6-8:calm").status == "pending"
+
+
+def test_import_requeues_a_picture_that_was_still_being_drawn(client, repo):
+    _ready(repo, "brave", pool=6, image_status="pending")       # ready, but its picture was still being drawn at export
+    repo.enqueue_job("image", "6-8", "brave", 1, [])
+    _ready(repo, "calm", pool=6, image_status="ready")          # picture finished: nothing to re-queue
+    backup = client.get("/api/parent/export").json()
+    files = {"file": ("b.json", json.dumps(backup), "application/json")}
+    r = client.post("/api/parent/import", files=files, data={"confirm": "true"})
+    assert r.status_code == 200, r.text
+    assert r.json()["counts"]["jobs_requeued"] == 1
+    brave = repo.get_content("6-8", "brave")
+    assert (brave.status, brave.image_status) == ("ready", "pending")   # the picture is still in progress
+    job = repo.get_job("image:6-8:brave")
+    assert (job.status, job.target_version, job.chain) == ("pending", 1, [])
+    assert repo.get_job("image:6-8:calm") is None
+    assert repo.job_counts()["pending"] == 1

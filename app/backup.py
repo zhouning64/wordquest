@@ -57,6 +57,11 @@ def import_backup(repo: Repository, blobs: BlobStore, data: dict) -> dict:
             # (none survive an import), from the stage that is missing.
             ensure_generation(repo, c.band, c.word)
             jobs_requeued += 1
+        elif c.status == "ready" and c.image_status == "pending":
+            # The picture was still being drawn at export time, and its job went with the jobs table. Re-queue it for
+            # the current version; image_status stays "pending" until that job finishes or gives up.
+            repo.enqueue_job("image", c.band, c.word, c.content_version, [])
+            jobs_requeued += 1
 
     counts = {name: len(data[name]) for name in COLLECTIONS}
     counts["images_missing"] = images_missing
