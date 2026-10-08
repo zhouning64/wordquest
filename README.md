@@ -104,6 +104,10 @@ Restart the server, then on the "Who's learning?" screen tap **Parent** and ente
 for 12 hours on that device). After 5 wrong tries the Parent login is locked for 15 minutes. If you forget the
 passcode, change it in `.env` and restart.
 
+Changing a code (`PARENT_PASSCODE` or `SITE_ACCESS_CODE`) stops new logins but does not log out devices that already
+entered it. To log every device out, stop the server, delete `data/secret_key`, and start it again — everyone then
+re-enters the codes. (If you set `SECRET_KEY` in `.env`, change that value instead.)
+
 In the Parent area:
 
 - **Profiles** — name, avatar, grade band, session length (5–30 minutes), new words per session (0–10), the break
@@ -157,14 +161,15 @@ Cost and rate controls (all in `.env`):
 - At about 6 calls per word, the default `AI_DAILY_CALL_LIMIT` of 2000 covers roughly 300 word × band items a day;
   raise it before adding a very large list if you want it ready the same day.
 - `AI_DAILY_CALL_LIMIT` (default 2000) caps outbound AI requests (text and pictures) per UTC day. When it is
-  reached, waiting words pause until tomorrow and the Parent area says "Paused until tomorrow".
+  reached, waiting words pause until tomorrow and the Parent area says "Paused until tomorrow". To resume sooner,
+  raise the limit and restart the server.
 - `GEN_CONCURRENCY` (default 3) is how many words are prepared in parallel. Lower it if the Cerebras free tier
   answers with many "429 Too Many Requests" errors.
 - Only the Parent area starts generation for new words. Learners can only trigger small question top-ups (at most
   one per word per day).
 
 Without a key the app still works with the starter set and with any content generated earlier; newly added words
-stay "preparing" until a key is configured.
+stay "preparing" until a key is configured (add it and restart the server; they resume right away).
 
 ## Pictures (z.ai)
 
@@ -209,7 +214,8 @@ z.ai answers with a temporary link that expires after 30 days, so WordQuest down
 `data/images/` — nothing depends on the link afterwards. Pictures are made once per word, grade band and content
 version, and every picture request counts toward `AI_DAILY_CALL_LIMIT`. If a picture fails, learners see the emoji
 scene; the word's row in the Parent area shows "🖼 failed" with the reason underneath (Preview shows it too, for
-example "image provider HTTP 401" for a wrong key) and a **Retry picture** button.
+example "image provider HTTP 401" for a wrong key) and a **Retry picture** button. If redrawing a word that already
+has a picture fails, the earlier picture stays in use.
 
 Other services with the same OpenAI-style images API work too: set their `IMAGE_BASE_URL` and `IMAGE_MODEL`.
 WordQuest sends `model`, `prompt`, `size` and (when set) `quality` — no `n` and no `response_format` — and accepts
@@ -243,7 +249,8 @@ cards, questions and progress. Pictures are not inside that file — also copy t
 **Restore or move to another computer:** set up WordQuest there, copy your `data/images/` folder into its `data/`
 folder, then Parent → Status & backup → choose the backup file → tick "I understand this replaces all current data"
 → **Import backup**. Import replaces everything on that server. Words whose picture file is missing fall back to the
-emoji scene (use Retry picture). Alternatively, stop the server and copy the whole `data/` folder.
+emoji scene (make a new one with **↻ Regenerate… → Picture only**). Alternatively, stop the server and copy the
+whole `data/` folder.
 
 ## Configuration reference
 

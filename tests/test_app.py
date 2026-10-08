@@ -116,6 +116,14 @@ def test_root_serves_the_page_shell(tmp_path):
         assert c.get("/static/nope.js").status_code == 404
 
 
+def test_api_docs_and_schema_are_not_served(tmp_path):
+    app = create_app(make_settings(tmp_path, site_access_code=""), **injected(tmp_path), start_worker=False, seed=False)
+    with TestClient(app) as c:
+        for path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
+            assert c.get(path).status_code == 404, path
+    assert "/api/profiles" in app.openapi()["paths"]  # the schema is still built in code (the route-table tests use it)
+
+
 def test_lifespan_populates_app_state(tmp_path):
     settings = make_settings(tmp_path)
     deps = injected(tmp_path)
@@ -155,6 +163,36 @@ def test_injected_llm_and_image_provider_are_used(tmp_path):
     with TestClient(app):
         assert isinstance(app.state.generator, ContentGenerator)
         assert app.state.image_provider is provider
+
+
+PARKED_UNTIL = "2099-01-01T00:00:00Z"  # far ahead, like an hour-long no-key deferral or the next UTC midnight
+
+
+def park_one_job_of_each_kind(repo: SqliteRepository) -> None:
+    """Every kind deferred, as a run without a key (AI kinds) or over AI_DAILY_CALL_LIMIT (all kinds) leaves them."""
+    for kind in ("learn", "questions", "image", "topup"):
+        repo.enqueue_job(kind, "6-8", "brave", 1, [])
+    while (job := repo.claim_next_job(clock.utc_now_iso(), 900)) is not None:
+        assert repo.defer_job(job.key, job.lease_token, PARKED_UNTIL)
+
+
+@pytest.mark.parametrize("with_llm, with_images, woken", [
+    (True, True, {"learn", "questions", "topup", "image"}),
+    (True, False, {"learn", "questions", "topup"}),
+    (False, True, {"image"}),
+    (False, False, set()),
+], ids=["text-and-pictures", "text-only", "pictures-only", "nothing-configured"])
+def test_startup_wakes_parked_jobs_that_the_configured_clients_can_run(tmp_path, with_llm, with_images, woken):
+    # "Add the key (or raise AI_DAILY_CALL_LIMIT) and restart" must resume waiting words right away.
+    deps = injected(tmp_path)
+    park_one_job_of_each_kind(deps["repo"])
+    app = create_app(make_settings(tmp_path), **deps, llm=FakeLLM({}) if with_llm else None,
+                     image_provider=StubImageProvider() if with_images else None, start_worker=False, seed=False)
+    with TestClient(app):
+        not_before = {kind: deps["repo"].get_job(f"{kind}:6-8:brave").not_before
+                      for kind in ("learn", "questions", "image", "topup")}
+    assert {kind for kind, value in not_before.items() if value == ""} == woken
+    assert all(value == PARKED_UNTIL for kind, value in not_before.items() if kind not in woken)
 
 
 @pytest.mark.parametrize(

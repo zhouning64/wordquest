@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+from datetime import timedelta
 from itertools import product
 from string import ascii_lowercase
 import pytest
@@ -9,8 +11,10 @@ from fastapi.testclient import TestClient
 
 import app.api.parent as parent_api
 from app import clock
+from app.ai.images.base import ImageProvider
 from app.backup import import_backup as real_import_backup
 from app.config import Settings
+from app.jobs import Worker
 from app.learning.srs import apply_events_to_state
 from app.main import create_app
 from app.models import AnswerEvent, LearnCard, Question, Sense, Session, WordContent, WordList
@@ -422,6 +426,51 @@ def _picture_job(repo, word: str, error: str, *, gave_up: bool, band: str = "6-8
         job = repo.claim_next_job(clock.utc_now_iso(), 300)
         assert job is not None and job.key == f"image:{band}:{word}"
         assert repo.finish_job(job.key, job.lease_token)
+
+
+class _BrokenImages(ImageProvider):
+    name = "broken"
+
+    async def generate(self, prompt: str) -> bytes:
+        raise RuntimeError("image service down")
+
+
+class _SteppingClock:
+    """Worker now_fn: every call is 10 minutes later, so the 5 s / 30 s picture retries are always due."""
+
+    def __init__(self) -> None:
+        self.now = clock.utc_now()
+
+    def __call__(self):
+        self.now += timedelta(minutes=10)
+        return self.now
+
+
+def test_failed_picture_is_flagged_only_when_no_earlier_picture_exists(client, repo, blobs, tmp_path):
+    reason = "RuntimeError: image service down"
+    _ready(repo, "brave", pool=6, image_status="pending")  # first picture still to draw
+    _ready(repo, "calm", pool=6, image_key="images/6-8/calm-v1.webp", image_status="ready")
+    p = _new_profile(client, "Ava", "6-8")
+    wl = _new_list(client, "Week 1", "brave, calm", assign=[p["id"]])["list"]
+    repo.enqueue_job("image", "6-8", "brave", 1, [])
+    assert client.post("/api/parent/content/6-8/calm/regenerate", json={"part": "image"}).is_success  # redraw
+    worker = Worker(repo=repo, blobs=blobs, generator=None, image_provider=_BrokenImages(),
+                    settings=_settings(tmp_path), now_fn=_SteppingClock())
+
+    async def drain() -> None:
+        while await worker.run_one():
+            pass
+
+    asyncio.run(drain())  # both picture jobs give up after 3 attempts
+
+    rows = {row["word"]: row for row in client.get("/api/parent/content", params={"list_id": wl["id"]}).json()["items"]}
+    assert (rows["brave"]["image_status"], rows["brave"]["image_error"]) == ("failed", reason)  # 🖼 failed + Retry
+    assert (rows["calm"]["image_status"], rows["calm"]["image_error"]) == ("ready", "")  # earlier picture kept
+    assert repo.get_job("image:6-8:calm").last_error == reason  # ...and the failure stays on the job
+    assert client.get("/api/parent/content/6-8/calm").json()["image_url"] == "/media/images/6-8/calm-v1.webp"
+    session = client.post(f"/api/profiles/{p['id']}/sessions", json={"mode": "normal", "local_date": TODAY}).json()
+    assert session["words"]["calm"]["image_url"] == "/media/images/6-8/calm-v1.webp"  # learners still see it
+    assert session["words"]["brave"]["image_url"] is None  # emoji scene
 
 
 def test_content_rows_and_detail_explain_a_failed_picture(client, repo):

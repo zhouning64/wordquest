@@ -71,6 +71,23 @@ def test_llm_reasoning_effort_rejects_anything_else_with_a_clear_error(monkeypat
     assert "'low', 'medium' or 'high'" in message and "empty for the model's default" in message
 
 
+@pytest.mark.parametrize("blank", [" ", "   ", "\t \n"])
+def test_whitespace_only_secrets_mean_not_configured(monkeypatch: pytest.MonkeyPatch, blank: str) -> None:
+    for field in SECRET_FIELDS:
+        monkeypatch.setenv(field.upper(), blank)
+    s = Settings(_env_file=None)
+    assert {field: getattr(s, field) for field in SECRET_FIELDS} == {field: "" for field in SECRET_FIELDS}
+    assert s.ai_enabled is False
+    assert s.secret_values() == []
+
+
+def test_secrets_are_stripped_of_surrounding_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CEREBRAS_API_KEY", "  csk-padded-1234 \n")
+    s = Settings(_env_file=None, image_api_key="\timg-key-5678 ", parent_passcode=" pp-9012 ")
+    assert (s.cerebras_api_key, s.image_api_key, s.parent_passcode) == ("csk-padded-1234", "img-key-5678", "pp-9012")
+    assert s.ai_enabled is True
+
+
 def test_env_file_is_read_and_unknown_keys_are_ignored(tmp_path: Path) -> None:
     env_file = tmp_path / "test.env"
     env_file.write_text("PARENT_PASSCODE=pp-from-file\nAI_DAILY_CALL_LIMIT=7\nSOMETHING_UNRELATED=1\n", encoding="utf-8")

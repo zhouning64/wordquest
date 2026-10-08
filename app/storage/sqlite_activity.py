@@ -213,6 +213,22 @@ class ActivityMixin:
     def defer_job(self, key: str, lease_token: str, not_before: str) -> bool:
         return self._update_owned_job(key, lease_token, lambda job: {"status": "pending", "not_before": not_before})
 
+    def wake_jobs(self, kinds: list[str]) -> int:
+        kinds = sorted(set(kinds))
+        if not kinds:
+            return 0
+        with self._tx() as conn:
+            rows = self._fetchall(
+                "SELECT data FROM jobs WHERE status = 'pending' AND not_before != '' "
+                f"AND kind IN ({placeholders(len(kinds))})",
+                kinds,
+            )
+            now = clock.utc_now_iso()
+            for (data,) in rows:
+                job = Job.model_validate_json(data)
+                self._put_job(conn, job.model_copy(update={"not_before": "", "updated_at": now}))
+            return len(rows)
+
     def job_counts(self) -> dict[str, int]:
         counts = {status: 0 for status in JOB_STATUSES}
         for status, n in self._fetchall("SELECT status, COUNT(*) FROM jobs GROUP BY status"):

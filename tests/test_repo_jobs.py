@@ -10,6 +10,7 @@ import pytest
 from app import clock
 from app.models import Job
 from app.security import register_secrets
+from app.storage.base import Repository
 from app.storage.sqlite_repo import SqliteRepository
 
 NOW = "2026-10-07T12:00:00Z"
@@ -279,6 +280,60 @@ def test_expired_lease_reclaimed_by_another_worker_makes_the_first_worker_a_noop
         "running", second.lease_token, "2026-10-07T12:10:01Z", 0)
     assert repo.finish_job(second.key, second.lease_token) is True
     assert repo.get_job(first.key).status == "done"
+
+
+# ---- wake_jobs ------------------------------------------------------------------------------
+
+TOMORROW = "2026-10-08T00:00:00Z"
+
+
+def _parked(repo, kind: str, word: str) -> str:
+    """Enqueue a job and defer it to tomorrow, like a run without a key or over the daily cap leaves it."""
+    repo.enqueue_job(kind, "6-8", word, 1, [])
+    job = repo.claim_next_job(NOW, 300)
+    assert job.key == f"{kind}:6-8:{word}"
+    assert repo.defer_job(job.key, job.lease_token, TOMORROW) is True
+    return job.key
+
+
+def test_wake_jobs_makes_parked_pending_jobs_of_the_given_kinds_claimable_now(repo, monkeypatch):
+    learn = _parked(repo, "learn", "a1")
+    topup = _parked(repo, "topup", "b2")
+    image = _parked(repo, "image", "c3")
+    repo.enqueue_job("questions", "6-8", "d4", 1, [])                # a retry after a failed attempt
+    retry = repo.claim_next_job(NOW, 300)
+    assert repo.fail_job(retry.key, retry.lease_token, "InvalidOutput: bad", "2026-10-07T12:00:30Z") is True
+    repo.enqueue_job("learn", "6-8", "e5", 1, [])                    # running: owned by a worker, left alone
+    running = repo.claim_next_job(NOW, 300)
+    repo.enqueue_job("learn", "6-8", "f6", 1, [])                    # failed for good: left alone
+    gone = repo.claim_next_job(NOW, 300)
+    assert repo.fail_job(gone.key, gone.lease_token, "InvalidOutput: final", None) is True
+    repo.enqueue_job("questions", "6-8", "g7", 1, [])                # pending and already due: nothing to wake
+    before = {key: repo.get_job(key) for key in (image, running.key, gone.key, "questions:6-8:g7")}
+
+    set_clock(monkeypatch, LATER)
+    assert repo.wake_jobs(["learn", "questions", "topup"]) == 3
+
+    for key in (learn, topup, retry.key):
+        job = repo.get_job(key)
+        assert (job.status, job.not_before, job.updated_at) == ("pending", "", LATER), key
+    woken_retry = repo.get_job(retry.key)
+    assert (woken_retry.attempts, woken_retry.last_error) == (1, "InvalidOutput: bad")  # no attempt given back
+    assert {key: repo.get_job(key) for key in before} == before  # other kinds, running, failed: unchanged
+    assert repo.get_job(image).not_before == TOMORROW
+    claimed = {repo.claim_next_job(NOW, 300).key for _ in range(4)}
+    assert claimed == {learn, topup, retry.key, "questions:6-8:g7"}
+    assert repo.claim_next_job(NOW, 300) is None  # the image job still waits for tomorrow
+
+
+def test_wake_jobs_counts_only_jobs_it_changed(repo):
+    assert "wake_jobs" in Repository.__abstractmethods__  # part of the storage interface (Phase 2 implements it too)
+    _parked(repo, "image", "a1")
+    assert repo.wake_jobs([]) == 0
+    assert repo.wake_jobs(["learn"]) == 0
+    assert repo.wake_jobs(["image"]) == 1
+    assert repo.wake_jobs(["image"]) == 0  # already claimable
+    assert repo.get_job("image:6-8:a1").not_before == ""
 
 
 def test_job_counts_always_has_all_four_keys(repo):

@@ -226,8 +226,7 @@ def main(argv: list[str] | None = None, out: TextIO | None = None) -> int:
     )
     args = parser.parse_args(argv)
     out = out or sys.stdout
-    settings = Settings()
-    settings.cerebras_api_key = settings.cerebras_api_key.strip()  # a blank or padded key must not reach the API as a 401
+    settings = Settings()  # strips the key: a blank or padded one never reaches the API as a 401
     if not settings.cerebras_api_key:
         print(NO_KEY_MESSAGE, file=sys.stderr)
         return 1

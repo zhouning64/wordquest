@@ -28,7 +28,7 @@ MAX_ATTEMPTS = len(BACKOFF_S) + 1
 SHORTFALL_BACKOFF_S = (5, 30, 60, 120)
 RATE_LIMIT_DEFAULT_S = 60
 RATE_LIMIT_MAX_S = 3600  # a Retry-After hint is capped at one hour (huge hints would overflow the date maths)
-NO_GENERATOR_DEFER_S = 3600
+NO_GENERATOR_DEFER_S = 300  # no key: check again in 5 minutes (a restart with a key wakes parked jobs at once)
 IDLE_S = 1.0
 TOPUP_MAX = 6
 ERROR_MAX_CHARS = 500
@@ -51,7 +51,10 @@ def next_utc_midnight(now: datetime) -> datetime:
 
 
 def backoff_for(exc: Exception) -> tuple[int, ...]:
-    """Seconds to wait before each retry of a failed attempt; the job gets len(result) + 1 attempts in total."""
+    """Retry waits for the failure that just happened: attempt n (1-based) is retried after result[n - 1] seconds
+    when n <= len(result), otherwise it was the last one. The budget is judged by this failure alone, so with mixed
+    failures 2 shortfalls then an invalid output is final at attempt 3, while 2 invalid outputs then a shortfall
+    is retried after 60 s."""
     return SHORTFALL_BACKOFF_S if isinstance(exc, PoolShortfall) else BACKOFF_S
 
 
@@ -229,8 +232,7 @@ class Worker:
                 await self._db(self.repo.add_questions, job.band, job.word, job.target_version, new)
             pool = pool + new
             if not pool_meets_minimum(pool):
-                raise PoolShortfall(
-                    f"only {len(pool)} verified questions (need 6 incl. 2 tier-1 and 1 tier-2); kept for next attempt")
+                raise PoolShortfall(f"only {len(pool)} verified questions (need 6 incl. 2 tier-1 and 1 tier-2)")
         if mode == "first":
             content.status = "ready"
             content.error = ""
@@ -299,6 +301,8 @@ class Worker:
         backoff = backoff_for(exc)
         if attempt <= len(backoff):  # attempts 1..len(backoff) are followed by a retry; the next one is final
             retry_at = clock.add_seconds_iso(self.now_fn(), backoff[attempt - 1])
+            if isinstance(exc, PoolShortfall):  # the parent sees this text; only a retry keeps the questions for later
+                message = f"{message}; kept for next attempt"[:ERROR_MAX_CHARS]
             await self._db(self.repo.fail_job, job.key, job.lease_token, message, retry_at)
             return
         if not await self._db(self.repo.fail_job, job.key, job.lease_token, message, None):
@@ -315,7 +319,10 @@ class Worker:
         if content is None or mode is None:
             return
         if job.kind == "image":
-            self.repo.set_image(job.band, job.word, content.image_key, "failed", job.target_version)
+            # A failed redraw must not hide the picture learners already have: with an earlier picture the status
+            # goes back to "ready" and the failure stays on the job; without one the Parent sees "🖼 failed".
+            status = "ready" if content.image_key else "failed"
+            self.repo.set_image(job.band, job.word, content.image_key, status, job.target_version)
         elif mode == "first":
             content.status = "failed"
             content.error = message

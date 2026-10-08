@@ -165,7 +165,7 @@ class CerebrasClient:
                 await asyncio.to_thread(self._on_request)
             try:
                 resp = await self._client.post(self._url, json=body, headers=headers)
-            except httpx.TransportError as exc:
+            except httpx.RequestError as exc:  # transport errors, plus DecodingError and TooManyRedirects
                 last_error = f"{type(exc).__name__}: {exc}"
                 continue
             if resp.status_code >= 500:

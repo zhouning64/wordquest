@@ -22,7 +22,7 @@ from app.api.parent import router as parent_router
 from app.auth import Auth, require_site
 from app.auth import router as auth_router
 from app.config import Settings
-from app.jobs import Worker
+from app.jobs import AI_KINDS, Worker
 from app.logs import JsonlLog
 from app.security import redact, register_secrets
 from app.seed_legacy import seed_legacy
@@ -195,6 +195,16 @@ def create_app(
         worker.generator = generator
         worker.image_provider = provider
 
+        # Jobs parked by an earlier run (no key: up to NO_GENERATOR_DEFER_S; daily cap: until UTC midnight) resume
+        # now, so "add the key / raise AI_DAILY_CALL_LIMIT, then restart" takes effect immediately.
+        wake_kinds = sorted(AI_KINDS) if generator is not None else []
+        if provider is not None:
+            wake_kinds.append("image")
+        if wake_kinds:
+            woken = await asyncio.to_thread(repo_.wake_jobs, wake_kinds)
+            if woken:
+                log.info("Resumed %d waiting generation jobs", woken)
+
         app.state.repo = repo_
         app.state.blobs = blobs_
         app.state.auth = Auth(settings, repo_)
@@ -227,7 +237,8 @@ def create_app(
             if owned_repo is not None:
                 _close_quietly(owned_repo, "repository")
 
-    app = FastAPI(title="WordQuest", lifespan=lifespan)
+    # No /docs, /redoc or /openapi.json: they would list every route to anyone on the network.
+    app = FastAPI(title="WordQuest", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.repo = repo
     app.state.blobs = blobs

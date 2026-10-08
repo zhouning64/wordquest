@@ -117,7 +117,7 @@ wordquest/
 | `IMAGE_API_KEY`, `IMAGE_MODEL` | *(empty)* | z.ai key; model `glm-image` or `cogview-4-250304`. |
 | `IMAGE_SIZE` | `1024x1024` | Valid for both z.ai models (glm-image: 1024–2048 px, multiples of 32; cogview-4: 512–2048, multiples of 16). |
 | `IMAGE_QUALITY` | *(empty)* | Empty = provider default; z.ai accepts `standard` (≈5–10 s) or `hd` (≈20 s). |
-| `SITE_ACCESS_CODE` | *(empty)* | Empty → no access gate (fine on `127.0.0.1`; the server logs a warning at startup if bound to a non-loopback host with no code). |
+| `SITE_ACCESS_CODE` | *(empty)* | Empty → no access gate (fine on `127.0.0.1`; the server logs a warning once, on the first request from a non-loopback client, while no code is set). |
 | `PARENT_PASSCODE` | *(empty)* | Empty → Parent area disabled with an explanatory message. |
 | `SECRET_KEY` | *(auto)* | Cookie signing key. If unset in Phase 1, generated once and saved to `DATA_DIR/secret_key`. |
 | `DATA_DIR` | `./data` | Database, images, logs. |
@@ -125,7 +125,7 @@ wordquest/
 | `GEN_CONCURRENCY` | `3` | Parallel generation jobs. |
 | `AI_DAILY_CALL_LIMIT` | `2000` | Cap on outbound LLM + image HTTP requests per UTC day; jobs are deferred (not failed) when hit. |
 
-`.env` is git-ignored; `.env.example` documents every variable with placeholder values.
+`.env` is git-ignored; `.env.example` documents every variable with placeholder values. The five secret values (`CEREBRAS_API_KEY`, `IMAGE_API_KEY`, `SITE_ACCESS_CODE`, `PARENT_PASSCODE`, `SECRET_KEY`) are stripped of surrounding whitespace when loaded, so a whitespace-only value means "not configured".
 
 ## 6. Data model
 
@@ -190,13 +190,16 @@ Repository
   lists:      list_lists() · get_list(id) · save_list(l)
               · delete_list(id)               also removes the id from every profile's list_ids
   content:    get_content(band, word) · get_contents(band, words) · save_content(c)
-              · list_content_by_status(status)
+              · list_content_by_status(status) · list_contents()   all contents, by band then word
               · save_draft(band, word, card, version)
               · swap_draft(band, word, version)   atomic: card := draft, content_version := version,
                                                   draft := null, delete questions of older versions
               · set_image(band, word, key, status, version)   partial update; no-op if version is stale
   questions:  get_pool(band, word, version=None)    None → the active content_version
+              · get_pools(band, words)        {word: active-version pool}
               · add_questions(band, word, version, qs)
+              · delete_questions(band, word, version) -> count   exactly that content_version
+              · max_question_version(band, word) -> int          0 when no questions are stored
   progress:   get_progress(profile_id, words) · list_progress(profile_id)
   sessions:   save_session(s) · get_session(id) · list_sessions(profile_id, limit)
   events:     apply_events(session_id, events, apply_fn) -> accepted_ids
@@ -212,8 +215,11 @@ Repository
               · claim_next_job(now, lease_s)  atomic: picks a pending job (or a running one whose
                  lease_until < now) with not_before ≤ now, learn/questions/image before topup,
                  sets running + lease_until
+              · get_job(key)
               · finish_job(key) · fail_job(key, error, retry_at | None)  (consumes an attempt)
               · defer_job(key, not_before)    (does NOT consume an attempt)
+              · wake_jobs(kinds) -> count     pending jobs of these kinds get not_before := "" (claimable
+                 now; attempts untouched; running/done/failed jobs unchanged); each job is updated on its own
               · job_counts()
   usage:      incr_ai_calls(utc_date) -> count · get_ai_calls(utc_date) -> count
   auth:       incr_auth_failure(scope, ip, window_start) -> count · clear_auth_failures(scope, ip)
@@ -238,19 +244,19 @@ Local `BlobStore` keys look like `images/{band}/{word}-v{version}.webp`, are sto
   - `questions`: draft = copy of current card at v+1 → `questions` → swap.
   - `image`: `image` only, for the current version.
 - **Pool top-up (learner-driven, bounded):** when a session is built and a profile has seen ≥ 75% of a word's pool, enqueue `topup` — unless one already ran for that word × band today (UTC), one is pending, or the pool is at its 40-question cap.
-- **Startup:** nothing special — jobs left `running` by a crash become claimable again when their lease expires.
+- **Startup:** parked jobs are woken (§7.2); jobs left `running` by a crash become claimable again when their lease expires.
 
 Only the Parent area can cause new words to be generated. Learner actions can only cause top-ups, bounded per word per day, by the pool cap, and by `AI_DAILY_CALL_LIMIT`; `claim_next_job` always prefers parent-initiated work over top-ups.
 
 ### 7.2 Job worker (`app/jobs.py`)
 
-An asyncio task started in the FastAPI lifespan runs `GEN_CONCURRENCY` workers (single process in Phase 1). Each loop claims a job with a 5-minute lease and runs it.
+An asyncio task started in the FastAPI lifespan runs `GEN_CONCURRENCY` workers (single process in Phase 1). Each loop claims a job with a 900 s (15-minute) lease — longer than a worst-case questions job — and runs it. At startup the lifespan calls `wake_jobs` for `learn`/`questions`/`topup` when a text generator is configured and for `image` when an image provider is configured, so adding a key or raising `AI_DAILY_CALL_LIMIT` and restarting resumes parked jobs at once (without a key, AI jobs are re-deferred 5 minutes at a time).
 
 - **Version guard:** each job carries `target_version`; if the content's active version or draft version no longer matches when the job finishes, its result is discarded.
-- **Attempts:** a job gets at most **3 attempts** — the first try, then retries after 5 s and 30 s — except a pool shortfall (§7.3), which keeps its verified questions between attempts and so gets up to **5 attempts** (retries after 5 s, 30 s, 60 s and 120 s). Invalid output (§7.5), `finish_reason = length`, or a pool shortfall each consume one attempt. Inside one attempt, `llm.py` retries only transport errors and HTTP 5xx, at most 2 times.
+- **Attempts:** a job gets at most **3 attempts** — the first try, then retries after 5 s and 30 s — except a pool shortfall (§7.3), which keeps its verified questions between attempts and so gets up to **5 attempts** (retries after 5 s, 30 s, 60 s and 120 s). Invalid output (§7.5), `finish_reason = length`, or a pool shortfall each consume one attempt. The budget is judged by the failure that just happened: 2 shortfalls then invalid output is final at attempt 3, while 2 invalid outputs then a shortfall is retried after 60 s. Inside one attempt, `llm.py` retries only request errors (`httpx.RequestError`: transport errors, undecodable bodies, redirect loops) and HTTP 5xx, at most 2 times.
 - **Deferral (no attempt consumed):** HTTP 429 → `defer_job` to `Retry-After` (or 60 s); a daily-quota 429 from Cerebras or reaching `AI_DAILY_CALL_LIMIT` → `defer_job` to the next UTC day.
 - **Accounting:** every outbound HTTP request to an AI provider calls `incr_ai_calls` first; `usage` (prompt/completion tokens) from every response is logged to `DATA_DIR/logs/ai-usage.jsonl`.
-- **Final failure, by kind:** `learn`/`questions` set `WordContent.status = failed` only for first-time generation (a regeneration failure leaves the current `ready` version alone and records the error); `image` sets only `image_status = failed`; `topup` records `last_error` on the job and changes nothing else.
+- **Final failure, by kind:** `learn`/`questions` set `WordContent.status = failed` only for first-time generation (a regeneration failure leaves the current `ready` version alone and records the error); `image` sets only `image_status = failed` — unless the word already has a picture (a failed redraw), which then stays `ready` and in use while the failure is recorded on the job only; `topup` records `last_error` on the job and changes nothing else.
 - **Chaining:** when `chain = true`, success enqueues the next stage (first-time: `learn` → `questions` → `image`). When `questions` succeeds with the minimum pool for a first-time word, `WordContent.status = ready`.
 
 ### 7.3 Model calls
@@ -269,7 +275,7 @@ All calls use `response_format: {type: "json_schema", json_schema: {name, strict
 
 ### 7.4 Images
 
-`ImageProvider.generate(prompt: str) -> bytes`. Prompt = fixed style preamble ("friendly flat cartoon illustration, consistent soft palette, simple background, no text or letters, kid-safe") + `image_scene`. Providers may answer with base64 image data or with a temporary link (z.ai links expire after 30 days); a link is downloaded immediately, **without** the `Authorization` header (the link may point at another host), and downloads over 20 MB are rejected. The result is resized to max 768 px on the long edge, encoded as WebP, stored via `BlobStore.put`, and recorded with `set_image`. `IMAGE_PROVIDER=none` skips the job and leaves `image_status = none`. On failure the Learn page shows the `emoji_scene` card; the Parent area offers "Retry picture".
+`ImageProvider.generate(prompt: str) -> bytes`. Prompt = fixed style preamble ("friendly flat cartoon illustration, consistent soft palette, simple background, no text or letters, kid-safe", plus one sentence asking that any children shown have varied appearances — skin tones, hair, girls and boys — never stereotyped) + `image_scene`. Providers may answer with base64 image data or with a temporary link (z.ai links expire after 30 days); a link is downloaded immediately, **without** the `Authorization` header (the link may point at another host), and downloads over 20 MB are rejected. The result is resized to max 768 px on the long edge, encoded as WebP, stored via `BlobStore.put`, and recorded with `set_image`. `IMAGE_PROVIDER=none` skips the job and leaves `image_status = none`. On failure the Learn page shows the `emoji_scene` card; the Parent area offers "Retry picture". A failed redraw of a word that already has a picture keeps that picture.
 
 ### 7.5 Code-level validation (`app/ai/validate.py`)
 
@@ -472,7 +478,7 @@ When AI is configured, a parent can "Regenerate → all" any starter word to get
 | Cerebras error / timeout (`LLM_TIMEOUT_S`, 180 s) | Retries per §7.2; then failure handling by job kind. Sessions are unaffected (ready content only). |
 | Cerebras 429 / daily cap | Job deferred without consuming an attempt; Parent banner explains. |
 | No Cerebras key | Starter set works for band `6-8` profiles; Parent area shows "AI not configured"; saving lists still works and words stay `pending` until a key is set. |
-| Image failure | Emoji card; "Retry picture"; the word stays `ready`. |
+| Image failure | Emoji card; "Retry picture"; the word stays `ready`. A failed redraw keeps the earlier picture. |
 | Regeneration failure | Current version keeps serving; error shown in Parent area. |
 | Server restart mid-job | The job's lease expires and it is claimed again. |
 | Lost connection mid-session | Session continues from the preloaded payload; events retried in order. |

@@ -234,6 +234,24 @@ async def test_image_failure_marks_only_the_image_failed(repo, clk, tmp_path):
     assert "image service down" in job.last_error
 
 
+async def test_failed_picture_redraw_keeps_the_earlier_picture(repo, clk, tmp_path):
+    old = image_key(BAND, WORD, 1)
+    save_ready_content(repo)
+    assert repo.set_image(BAND, WORD, old, "ready", 1)
+    regenerate(repo, BAND, WORD, "image")  # Parent: ↻ Regenerate… → Picture only
+    worker = make_worker(repo, clk, tmp_path, images=BrokenImages())
+
+    for wait in (0, BACKOFF_S[0], BACKOFF_S[1]):
+        clk.advance(wait)
+        assert await worker.run_one()
+
+    content = repo.get_content(BAND, WORD)
+    assert (content.image_status, content.image_key) == ("ready", old)  # learners keep seeing the earlier picture
+    job = repo.get_job(IMAGE_KEY)
+    assert (job.status, job.attempts) == ("failed", 3)
+    assert job.last_error == "RuntimeError: image service down"  # the failure is recorded on the job only
+
+
 async def test_pool_shortfall_consumes_an_attempt_and_keeps_verified_questions(repo, clk, tmp_path):
     card = make_card()
     first, second = BATCH_A[:3], BATCH_A[3:]  # 3 tier-1 questions, then the 3 tier-2 ones
@@ -310,6 +328,28 @@ async def test_pool_shortfall_gets_five_attempts_with_growing_backoff(repo, clk,
     assert not await worker.run_one()
 
 
+async def test_shortfall_text_mentions_a_next_attempt_only_when_one_is_scheduled(repo, clk, tmp_path):
+    # The parent reads this text: after the last attempt there is no "next attempt" to keep anything for.
+    card = make_card()
+    worker = make_worker(repo, clk, tmp_path, llm=FakeLLM(trickle_script(card, [[item] for item in BATCH_A[:5]])))
+    ensure_generation(repo, BAND, WORD)
+    assert await worker.run_one()  # learn
+
+    for wait in (5, 30, 60, 120):
+        assert await worker.run_one()
+        job = repo.get_job(QUESTIONS_KEY)
+        assert job.status == "pending"
+        assert job.last_error.endswith("; kept for next attempt")
+        clk.advance(wait)
+
+    assert await worker.run_one()  # attempt 5 is final
+    job = repo.get_job(QUESTIONS_KEY)
+    assert job.status == "failed"
+    expected = "PoolShortfall: only 5 verified questions (need 6 incl. 2 tier-1 and 1 tier-2)"
+    assert job.last_error == expected
+    assert repo.get_content(BAND, WORD).error == expected
+
+
 async def test_pool_built_over_five_attempts_is_ready_on_the_last_one(repo, clk, tmp_path):
     card = make_card()
     batches = [[item] for item in BATCH_A[:4]] + [BATCH_A[4:]]  # 1 + 1 + 1 + 1 + 2 verified questions
@@ -356,6 +396,54 @@ async def test_invalid_questions_still_fail_after_three_attempts(repo, clk, tmp_
     assert (content.status, content.error.startswith("InvalidOutput")) == ("failed", True)
     assert len(llm.calls_for(QUESTION_BATCH)) == 3
     assert not await worker.run_one()
+
+
+BAD_BATCH = {"questions": "not a list"}  # parse_questions raises InvalidOutput (no answer check is made)
+
+
+async def test_mixed_failures_two_shortfalls_then_invalid_output_is_final_at_attempt_3(repo, clk, tmp_path):
+    # The attempt budget is judged by the failure that just happened: invalid output allows 3 attempts in total.
+    card = make_card()
+    script = trickle_script(card, [[BATCH_A[0]], [BATCH_A[1]]])
+    script[QUESTION_BATCH].append(BAD_BATCH)
+    worker = make_worker(repo, clk, tmp_path, llm=FakeLLM(script))
+    ensure_generation(repo, BAND, WORD)
+    assert await worker.run_one()  # learn
+
+    for attempt, wait in enumerate((5, 30), start=1):
+        assert await worker.run_one()  # shortfall
+        job = repo.get_job(QUESTIONS_KEY)
+        assert (job.status, job.attempts, job.last_error.startswith("PoolShortfall")) == ("pending", attempt, True)
+        clk.advance(wait)
+    assert await worker.run_one()  # invalid output at attempt 3: 3 > len(BACKOFF_S), so it is final
+
+    job = repo.get_job(QUESTIONS_KEY)
+    assert (job.status, job.attempts, job.last_error.startswith("InvalidOutput")) == ("failed", 3, True)
+    assert repo.get_content(BAND, WORD).status == "failed"
+    assert not await worker.run_one()
+
+
+async def test_mixed_failures_two_invalid_outputs_then_shortfall_retries_after_60s(repo, clk, tmp_path):
+    card = make_card()
+    llm = FakeLLM({
+        LEARN_CARD: [card.model_dump()],
+        QUESTION_BATCH: [BAD_BATCH, BAD_BATCH, batch([BATCH_A[0]])],
+        ANSWER_CHECK: [check_all_match(card, [BATCH_A[0]])],
+    })
+    worker = make_worker(repo, clk, tmp_path, llm=llm)
+    ensure_generation(repo, BAND, WORD)
+    assert await worker.run_one()  # learn
+
+    for wait in (5, 30):
+        assert await worker.run_one()  # invalid output
+        clk.advance(wait)
+    assert await worker.run_one()  # shortfall at attempt 3: 3 <= len(SHORTFALL_BACKOFF_S), so it is retried
+
+    job = repo.get_job(QUESTIONS_KEY)
+    assert (job.status, job.attempts) == ("pending", 3)
+    assert job.not_before == clock.iso(clk.now + timedelta(seconds=60))
+    assert job.last_error.startswith("PoolShortfall") and job.last_error.endswith("; kept for next attempt")
+    assert repo.get_content(BAND, WORD).status == "pending"
 
 
 async def test_topup_fills_the_pool_only_up_to_the_cap(repo, clk, tmp_path):
@@ -598,7 +686,8 @@ async def test_without_generator_ai_jobs_wait_and_image_jobs_still_run(repo, clk
     assert not await worker.run_one()
 
     learn = repo.get_job(f"learn:{BAND}:lucid")
-    assert (learn.status, learn.attempts, learn.not_before) == ("pending", 0, "2026-10-07T13:00:00Z")
+    # 5 minutes, not an hour: a key added later (and a restart, which wakes parked jobs) resumes the word quickly
+    assert (learn.status, learn.attempts, learn.not_before) == ("pending", 0, "2026-10-07T12:05:00Z")
     assert repo.get_content(BAND, "lucid").status == "pending"
     assert repo.get_job(IMAGE_KEY).status == "done"
     content = repo.get_content(BAND, WORD)

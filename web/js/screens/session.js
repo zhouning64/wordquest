@@ -288,6 +288,8 @@ export function render(root, ctx) {
   function teardown() {
     if (tornDown) return;
     tornDown = true;
+    // Back → Forward must not re-render this payload (a second run would re-post its events under new ids).
+    if (ctx.state.session === payload) ctx.state.session = null;
     clearInterval(timerId);
     document.removeEventListener("keydown", onKey);
     stopSpeaking();

@@ -208,6 +208,22 @@ async def test_three_transport_errors_raise_transient(sleeps):
     assert "ConnectError" in str(ei.value)
 
 
+async def test_other_request_errors_are_retried_and_redacted_like_transport_errors(sleeps):
+    # httpx.RequestError also covers DecodingError and TooManyRedirects, which are not TransportErrors.
+    register_secrets([API_KEY])
+    retried = Recorder(httpx.DecodingError("bad gzip body"), ok_response({"answer": "ok"}))
+    assert (await call(retried)).data == {"answer": "ok"}
+    assert len(retried.requests) == 2
+
+    leak = httpx.TooManyRedirects(f"redirect loop via https://x.test/?key={API_KEY}")
+    handler = Recorder(httpx.DecodingError("bad gzip body"), leak, leak)
+    with pytest.raises(TransientError) as ei:
+        await call(handler)
+    assert len(handler.requests) == 3
+    assert "TooManyRedirects" in str(ei.value)
+    assert API_KEY not in str(ei.value) and "[REDACTED]" in str(ei.value)
+
+
 async def test_three_5xx_raise_transient(sleeps):
     handler = Recorder(httpx.Response(502), httpx.Response(503), httpx.Response(500, text="still down"))
     with pytest.raises(TransientError) as ei:

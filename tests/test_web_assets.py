@@ -102,3 +102,12 @@ def test_tap_targets_are_at_least_44px():  # spec §10
     assert _px(_css_rule(css, "a.parent-link"), "min-height") >= 44
     assert _px(_css_rule(css, ".row-actions .btn"), "min-height") >= 44
     assert _px(_css_rule(css, ".tab"), "min-height") >= 44
+
+
+def test_wide_pages_grow_to_1100px_on_desktop():
+    # Unconditional .wrap.wide rules are the mobile-first base: one placed after the breakpoints would override them.
+    css = (WEB / "css" / "app.css").read_text(encoding="utf-8")
+    desktop = css.index("@media (min-width: 1024px)")
+    assert "max-width: 1100px" in css[desktop:css.index("}", css.index(".wrap.wide", desktop))]
+    later = [m.start() for m in re.finditer(r"^\.wrap\.wide\s*\{", css, re.MULTILINE) if m.start() > desktop]
+    assert later == [], "a top-level .wrap.wide rule after the 1024px breakpoint overrides its 1100px width"

@@ -281,7 +281,7 @@ def test_every_api_route_requires_site_cookie(tmp_path):
     with TestClient(app) as client:
         r = client.post("/api/auth/site", json={"code": "not-the-code"})
         assert r.json().get("detail") != "access_code_required"      # the one route open without the cookie
-        # /api/* and /media/* are gated; / and the docs pages are public by design and are not swept here.
+        # /api/* and /media/* are gated; / (the page shell) is public by design and is not swept here.
         for method, path in sorted(_route_table(app)):
             if not path.startswith(("/api/", "/media/")) or (method, path) == ("POST", "/api/auth/site"):
                 continue

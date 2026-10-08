@@ -6,7 +6,9 @@ from PIL import Image, ImageOps
 
 STYLE_PREAMBLE = (
     "Friendly flat cartoon illustration, consistent soft palette, simple background, "
-    "no text or letters, kid-safe."
+    "no text or letters, kid-safe. "
+    "Any children shown have varied appearances (different skin tones, hair colors and styles, girls and boys), "
+    "drawn naturally and never as stereotypes."
 )
 
 

@@ -90,6 +90,14 @@ def test_build_image_prompt():
         assert phrase in STYLE_PREAMBLE
 
 
+def test_image_prompt_asks_for_children_of_varied_appearance():
+    # Every checkpoint picture showed the same brown-haired boy: each prompt asks for variety, without stereotypes.
+    prompt = build_image_prompt("a kid saving coins in a jar")
+    sentence = next(s for s in prompt.split(". ") if "children" in s.lower())
+    for phrase in ("varied", "skin tone", "hair", "girls and boys", "stereotype"):
+        assert phrase in sentence, phrase
+
+
 # ---------------------------------------------------------------- FakeImageProvider
 
 

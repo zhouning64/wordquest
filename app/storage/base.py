@@ -185,6 +185,12 @@ class Repository(ABC):
         """Status pending with not_before set; attempts unchanged; lease cleared. True iff applied."""
 
     @abstractmethod
+    def wake_jobs(self, kinds: list[str]) -> int:
+        """Make every PENDING job of these kinds claimable now: not_before := "" (updated_at refreshed; attempts,
+        last_error and chain unchanged). Running, done and failed jobs are untouched. Each job is updated on its
+        own (no cross-job transaction needed). Returns how many jobs had a not_before to clear."""
+
+    @abstractmethod
     def job_counts(self) -> dict[str, int]:
         """{"pending": n, "running": n, "done": n, "failed": n} — all four keys always present."""
 

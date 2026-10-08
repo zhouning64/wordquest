@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     gen_concurrency: int = 3
     ai_daily_call_limit: int = 2000
 
+    @field_validator("cerebras_api_key", "image_api_key", "site_access_code", "parent_passcode", "secret_key")
+    @classmethod
+    def _strip_secret(cls, value: str) -> str:
+        # A blank or padded value would otherwise count as configured (and reach the API as a 401).
+        return value.strip()
+
     @field_validator("llm_reasoning_effort", mode="before")
     @classmethod
     def _check_reasoning_effort(cls, value: object) -> str:

@@ -27,7 +27,7 @@ EXPECTED_REPOSITORY_METHODS = {
     "get_progress", "list_progress",
     "save_session", "get_session", "list_sessions",
     "apply_events", "list_events",
-    "enqueue_job", "claim_next_job", "get_job", "finish_job", "fail_job", "defer_job", "job_counts",
+    "enqueue_job", "claim_next_job", "get_job", "finish_job", "fail_job", "defer_job", "wake_jobs", "job_counts",
     "incr_ai_calls", "get_ai_calls",
     "incr_auth_failure", "clear_auth_failures",
     "export_all", "import_all",

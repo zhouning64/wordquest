@@ -52,6 +52,29 @@ def test_blocked_terms_and_their_inflections_are_flagged(text: str, entry: str) 
     assert find_blocked(text) == entry
 
 
+@pytest.mark.parametrize(
+    ("text", "entry"),
+    [
+        ("What a crappy day.", "crappy"),  # -y adjectives are their own entries ...
+        ("She was being bitchy.", "bitchy"),
+        ("A slutty outfit.", "slutty"),
+        ("The crappiest seat.", "crappy"),  # ... so their own inflections are covered too
+        ("That fuckin' dog!", "fuckin"),  # dropped-g form (the trailing apostrophe is not part of the token)
+        ("Fuckin dog!", "fuckin"),
+        ("Fuck'em all.", "fuck"),  # apostrophe-joined tokens are checked part by part, like hyphenated ones
+        ("This shit'll stop.", "shit"),
+    ],
+)
+def test_derived_and_apostrophe_joined_forms_are_flagged(text: str, entry: str) -> None:
+    assert find_blocked(text) == entry
+
+
+@pytest.mark.parametrize(
+    "text", ["Don't be late at five o'clock.", "We can't stop the rock'n'roll band.", "The lass'll pass the class."])
+def test_apostrophe_split_leaves_innocent_contractions_alone(text: str) -> None:
+    assert find_blocked(text) is None
+
+
 def test_custom_blocklist_returns_the_entry_not_the_form() -> None:
     terms = frozenset({"widget"})
     assert find_blocked("Widgets everywhere!", terms) == "widget"

@@ -243,7 +243,6 @@ table.data tr:hover td { background: #f8fafc; }
 }
 
 /* ===== Parent area screens (Task 22) — classes are "p"-prefixed so they never collide with learner styles ===== */
-.wrap.wide { max-width: 960px; }
 .pwrap { padding-bottom: 32px; }
 .pwrap.narrow { max-width: 480px; margin: 0 auto; }
 .pwrap .muted { color: #64748b; font-size: 13.5px; }
