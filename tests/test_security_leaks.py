@@ -29,6 +29,9 @@ TODAY = "2026-10-07"
 JOB_KINDS = ("learn", "questions", "image", "topup")
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 PATH_PARAM = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?::[A-Za-z_]+)?\}")
+# Every scanned GET answers 200 unless listed here. /media/{key:path} answers 404 because the lantern picture
+# failed in this scenario, so no file is stored under the key the scan asks for.
+EXPECTED_GET_STATUS = {"/media/{key:path}": 404}
 
 
 def _sentinels() -> dict[str, str]:
@@ -47,7 +50,18 @@ def _assert_clean(label: str, text: str, sentinels: dict[str, str]) -> None:
 
 
 def _fill_path(path: str, values: dict[str, str]) -> str:
-    return PATH_PARAM.sub(lambda m: values.get(m.group(1), "unknown-value"), path)
+    """Substitute every path parameter. A parameter with no value is an error, so a new route can never be skipped."""
+    def fill(match: re.Match[str]) -> str:
+        name = match.group(1)
+        assert name in values, f"no value for path parameter {{{name}}} in {path}; add it to the scenario"
+        return values[name]
+
+    return PATH_PARAM.sub(fill, path)
+
+
+def _placeholders(path: str) -> dict[str, str]:
+    """Stand-in values for requests that the site gate rejects before any route handler runs."""
+    return {name: "placeholder" for name in PATH_PARAM.findall(path)}
 
 
 def _route_table(app) -> set[tuple[str, str]]:
@@ -217,7 +231,8 @@ def test_no_secret_reaches_any_response_store_export_or_log(tmp_path, monkeypatc
         assert {"/api/parent/export", "/api/parent/content", "/api/parent/queue", "/api/profiles"} <= set(get_paths)
         for path in get_paths:
             r = call("GET", _fill_path(path, values), params=query)
-            assert r.status_code < 500, f"GET {path} -> {r.status_code}"
+            expected = EXPECTED_GET_STATUS.get(path, 200)
+            assert r.status_code == expected, f"GET {path} -> {r.status_code}, expected {expected}"
 
         for label, r in responses:
             _assert_clean(f"response to {label}", r.text, secrets)
@@ -233,8 +248,23 @@ def test_no_secret_reaches_any_response_store_export_or_log(tmp_path, monkeypatc
                     _assert_clean(f"job {job.key}", job.model_dump_json(), secrets)
         _assert_clean("export_all()", json.dumps(repo.export_all(), ensure_ascii=False), secrets)
 
+        # The secret really reached each stored error before redaction: redact() leaves this marker where it removed one.
+        assert "[REDACTED]" in repo.get_content("6-8", "brave").error
+        failed = {
+            job.key: job
+            for c in repo.list_contents()
+            for job in (repo.get_job(f"{kind}:{c.band}:{c.word}") for kind in JOB_KINDS)
+            if job is not None and job.status == "failed"
+        }
+        assert set(failed) == {"learn:6-8:brave", "learn:6-8:lantern", "image:6-8:lantern"}, sorted(failed)
+        for key, job in failed.items():
+            assert "[REDACTED]" in job.last_error, key
+
     logs_dir = settings.data_dir / "logs"
     assert logs_dir.is_dir()
+    for name in ("ai-rejections.jsonl", "ai-usage.jsonl"):
+        assert (logs_dir / name).is_file(), f"{name} was not written"
+        assert "[REDACTED]" in (logs_dir / name).read_text(encoding="utf-8"), f"{name} holds no redacted secret"
     files = [p for p in settings.data_dir.rglob("*") if p.is_file()]
     assert files
     for path in files:
@@ -251,10 +281,11 @@ def test_every_api_route_requires_site_cookie(tmp_path):
     with TestClient(app) as client:
         r = client.post("/api/auth/site", json={"code": "not-the-code"})
         assert r.json().get("detail") != "access_code_required"      # the one route open without the cookie
+        # /api/* and /media/* are gated; / and the docs pages are public by design and are not swept here.
         for method, path in sorted(_route_table(app)):
-            if not path.startswith("/api/") or (method, path) == ("POST", "/api/auth/site"):
+            if not path.startswith(("/api/", "/media/")) or (method, path) == ("POST", "/api/auth/site"):
                 continue
-            r = client.request(method, _fill_path(path, {}), json={})
+            r = client.request(method, _fill_path(path, _placeholders(path)), json={})
             assert r.status_code == 401, f"{method} {path} -> {r.status_code}"
             assert r.json() == {"detail": "access_code_required"}, f"{method} {path}"
             checked.append((method, PATH_PARAM.sub("{}", path)))
@@ -264,6 +295,7 @@ def test_every_api_route_requires_site_cookie(tmp_path):
         ("POST", "/api/sessions/{}/finish"), ("GET", "/api/parent/profiles"), ("POST", "/api/parent/lists"),
         ("POST", "/api/parent/import"), ("GET", "/api/parent/export"),
         ("POST", "/api/parent/content/{}/{}/regenerate"), ("PUT", "/api/parent/profiles/{}/lists"),
+        ("GET", "/media/{}"),
     }
     missing = must_cover - set(checked)
     assert not missing, f"routes not found: {sorted(missing)}"
