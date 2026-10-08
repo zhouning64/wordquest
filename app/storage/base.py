@@ -112,6 +112,10 @@ class Repository(ABC):
     def delete_questions(self, band: str, word: str, version: int) -> int:
         """Delete every question of this word × band at exactly this content_version. Returns how many were deleted."""
 
+    @abstractmethod
+    def max_question_version(self, band: str, word: str) -> int:
+        """Highest content_version among the stored questions of this word × band; 0 when there are none."""
+
     # ---- progress -------------------------------------------------------------------------
     @abstractmethod
     def get_progress(self, profile_id: str, words: list[str]) -> dict[str, WordProgress]:

@@ -98,8 +98,9 @@ def regenerate(repo: Repository, band: str, word: str, part: str) -> None:
         repo.set_image(band, word, content.image_key, "pending", current)
         repo.enqueue_job("image", band, word, current, [])
         return
-    # A regeneration that is already in flight is superseded by moving to a newer version.
-    target = max(current, content.draft_version or 0) + 1
+    # A regeneration that is already in flight is superseded by moving to a newer version. A version that still
+    # holds stored questions (a superseded draft's leftovers) is never reused: its pool may belong to another card.
+    target = max(current, content.draft_version or 0, repo.max_question_version(band, word)) + 1
     if part == "questions":
         if content.error:
             content.error = ""

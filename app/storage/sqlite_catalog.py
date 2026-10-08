@@ -206,3 +206,8 @@ class CatalogMixin:
                 (band, word, version),
             )
             return cur.rowcount
+
+    def max_question_version(self, band: str, word: str) -> int:
+        with self._tx(write=False):
+            row = self._fetchone("SELECT MAX(version) FROM questions WHERE band = ? AND word = ?", (band, word))
+        return int(row[0] or 0) if row else 0

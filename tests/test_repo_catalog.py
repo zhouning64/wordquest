@@ -23,7 +23,7 @@ EXPECTED_REPOSITORY_METHODS = {
     "list_lists", "get_list", "save_list", "delete_list",
     "get_content", "get_contents", "save_content", "list_content_by_status", "list_contents",
     "save_draft", "swap_draft", "set_image",
-    "get_pool", "get_pools", "add_questions", "delete_questions",
+    "get_pool", "get_pools", "add_questions", "delete_questions", "max_question_version",
     "get_progress", "list_progress",
     "save_session", "get_session", "list_sessions",
     "apply_events", "list_events",
@@ -535,3 +535,20 @@ def test_delete_questions_removes_only_that_version_of_that_word(repo):
     assert ids(repo.get_pool("3-5", "brave", 2)) == ["k2"]  # the same word in another band stays
     assert repo.delete_questions("6-8", "brave", 2) == 0    # nothing left to delete
     assert repo.delete_questions("6-8", "ghost", 2) == 0
+
+
+def test_max_question_version_is_the_highest_stored_version_of_that_word(repo):
+    assert repo.max_question_version("6-8", "brave") == 0  # nothing stored yet
+    repo.save_content(make_content("6-8", "brave", version=1))
+    repo.add_questions("6-8", "brave", 1, [make_question("b1", "6-8", "brave", 1)])
+    repo.add_questions("6-8", "brave", 3, [make_question("b3", "6-8", "brave", 3)])
+    repo.add_questions("6-8", "brave", 2, [make_question("b2", "6-8", "brave", 2)])
+    repo.add_questions("6-8", "calm", 7, [make_question("c7", "6-8", "calm", 7)])  # another word
+    repo.add_questions("3-5", "brave", 9, [make_question("k9", "3-5", "brave", 9)])  # another band
+
+    assert repo.max_question_version("6-8", "brave") == 3
+    assert repo.max_question_version("6-8", "calm") == 7
+    assert repo.max_question_version("6-8", "ghost") == 0
+    assert repo.max_question_version("3-5", "brave") == 9
+    repo.delete_questions("6-8", "brave", 3)  # the mark follows what is stored, not what was ever stored
+    assert repo.max_question_version("6-8", "brave") == 2

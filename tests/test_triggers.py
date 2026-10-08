@@ -245,6 +245,20 @@ def test_regenerate_while_a_draft_is_in_progress_moves_to_a_newer_version(repo):
     assert (job.target_version, job.chain) == (3, ["questions"])
 
 
+@pytest.mark.parametrize("stranded_version", [2, 5])
+@pytest.mark.parametrize("part, job_kind", [("all", "learn"), ("learn", "learn"), ("questions", "questions")])
+def test_regenerate_skips_every_version_that_still_has_stored_questions(repo, part, job_kind, stranded_version):
+    save_ready_content(repo)  # v1 is active
+    repo.add_questions(BAND, WORD, stranded_version, stored_questions(3, version=stranded_version))  # leftovers
+
+    regenerate(repo, BAND, WORD, part)
+
+    target = stranded_version + 1
+    content = repo.get_content(BAND, WORD)
+    assert (content.content_version, content.draft_version) == (1, target)
+    assert job_of(repo, job_kind).target_version == target
+
+
 def test_regenerate_rejects_unknown_part_and_missing_card(repo):
     with pytest.raises(ValueError):
         regenerate(repo, BAND, WORD, "all")  # no content at all

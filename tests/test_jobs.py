@@ -390,6 +390,46 @@ async def test_failed_regeneration_questions_are_not_reused_by_the_next_regenera
     assert not {q.id for q in failed} & {q.id for q in served}
 
 
+async def test_superseded_draft_questions_are_never_served_by_a_later_regeneration(repo, clk, tmp_path):
+    save_ready_content(repo)  # v1: the served card + 6 questions
+    card_a, card_b, card_c = (make_card(short_def=s) for s in (
+        "card A: careful with money", "card B: never wastes anything", "card C: spends on what matters"))
+    stranded_batch = BATCH_A[:3]  # card A's verified questions, stranded when regeneration 2 supersedes v2
+    invalid_batch = {"items": []}  # no "questions" key → InvalidOutput
+    llm = FakeLLM({
+        LEARN_CARD: [card_a.model_dump(), card_b.model_dump(), card_c.model_dump()],
+        QUESTION_BATCH: [batch(stranded_batch), invalid_batch, invalid_batch, invalid_batch, batch(BATCH_B)],
+        ANSWER_CHECK: [check_all_match(card_a, stranded_batch), check_all_match(card_c, BATCH_B)],
+    })
+    worker = make_worker(repo, clk, tmp_path, llm=llm)  # no image provider
+
+    regenerate(repo, BAND, WORD, "learn")  # regeneration 1: draft v2 = card A
+    assert await worker.run_one()  # learn v2
+    assert await worker.run_one()  # questions v2 attempt 1: 3 verified stored, then PoolShortfall
+    stranded = repo.get_pool(BAND, WORD, 2)
+    assert len(stranded) == 3
+
+    regenerate(repo, BAND, WORD, "learn")  # regeneration 2 supersedes v2: draft v3 = card B
+    assert await worker.run_one()  # learn v3; its questions job replaces the v2 one, which never runs again
+    for wait in (0, BACKOFF_S[0], BACKOFF_S[1]):  # questions v3 fails three times: final failure
+        clk.advance(wait)
+        assert await worker.run_one()
+    content = repo.get_content(BAND, WORD)
+    assert (content.draft, content.draft_version, content.content_version) == (None, None, 1)
+    assert len(repo.get_pool(BAND, WORD, 2)) == 3  # card A's questions are still stored under v2
+
+    regenerate(repo, BAND, WORD, "learn")  # regeneration 3 skips v2; v3 holds nothing, so it is free again
+    assert repo.get_content(BAND, WORD).draft_version == 3
+    assert await drain(worker) == 2  # learn v3 (card C) → questions → swap
+    content = repo.get_content(BAND, WORD)
+    assert (content.content_version, content.card.short_def) == (3, card_c.short_def)
+    served = repo.get_pool(BAND, WORD)
+    assert len(served) == 6
+    assert {q.prompt for q in served} == {item["prompt"] for item in BATCH_B}  # nothing from card A or B
+    assert not {q.id for q in stranded} & {q.id for q in served}
+    assert repo.get_pool(BAND, WORD, 2) == []  # the swap removed the stranded questions
+
+
 async def test_stale_job_is_discarded_without_calling_the_model(repo, clk, tmp_path):
     llm = FakeLLM({})
     worker = make_worker(repo, clk, tmp_path, llm=llm)
