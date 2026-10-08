@@ -473,7 +473,123 @@ def test_event_errors(three_new_words):
     assert env.client.post(f"/api/sessions/{sid}/events", json={"events": [bad_kind]}).status_code == 422
 
 
-# --- finish ------------------------------------------------------------------------------------
+# --- validation at the API boundary -------------------------------------------------------------
+
+
+def upload(env, sid: str, events: list[dict]):
+    return env.client.post(f"/api/sessions/{sid}/events", json={"events": events})
+
+
+def nothing_applied(env, sid: str) -> None:
+    assert env.repo.get_session(sid).answered == 0
+    assert env.repo.list_events("p1", TODAY) == []
+    assert "candid" not in env.repo.get_progress("p1", ["candid"])
+
+
+@pytest.mark.parametrize("bad_day", ["today", "2026-1-07", "2026-13-01", "2026-02-30"])
+def test_malformed_event_date_rejects_the_whole_batch(three_new_words, bad_day):
+    env = three_new_words
+    data = start(env)
+    sid = data["session_id"]
+    events = [
+        ev("intro-candid-1", "candid", "intro_seen", at="2026-10-07T15:00:00Z"),
+        ev("answer-candid-1", "candid", "answer", correct=True, question=question_for(data, "candid"),
+           at="2026-10-07T15:00:05Z", local_date=bad_day),
+    ]
+    assert upload(env, sid, events).status_code == 422
+    nothing_applied(env, sid)
+
+
+@pytest.mark.parametrize("bad_at", ["today", "2026-10-07T15:00:00", "2026-10-07 15:00:05Z",
+                                    "2026-13-07T15:00:00Z", "2026-10-07T25:00:00Z"])
+def test_malformed_event_timestamp_rejects_the_whole_batch(three_new_words, bad_at):
+    env = three_new_words
+    sid = start(env)["session_id"]
+    assert upload(env, sid, [ev("intro-candid-1", "candid", "intro_seen", at=bad_at)]).status_code == 422
+    nothing_applied(env, sid)
+
+
+@pytest.mark.parametrize("good_at", ["2026-10-07T15:00:05Z", "2026-10-07T15:00:05.5Z", "2026-10-07T15:00:05.123Z"])
+def test_utc_timestamps_with_or_without_fractions_are_accepted(three_new_words, good_at):
+    env = three_new_words
+    sid = start(env)["session_id"]
+    r = upload(env, sid, [ev("intro-candid-1", "candid", "intro_seen", at=good_at)])
+    assert r.status_code == 200
+    assert r.json() == {"accepted": ["intro-candid-1"]}
+
+
+@pytest.mark.parametrize("day", ["2026-10-05", "2026-10-09"])  # two days before and after the session
+def test_event_date_two_days_from_the_session_rejects_the_batch(three_new_words, day):
+    env = three_new_words
+    data = start(env)
+    sid = data["session_id"]
+    events = [
+        ev("intro-candid-1", "candid", "intro_seen", at="2026-10-07T15:00:00Z"),
+        ev("answer-candid-1", "candid", "answer", correct=True, question=question_for(data, "candid"),
+           at="2026-10-07T15:00:05Z", local_date=day),
+    ]
+    r = upload(env, sid, events)
+    assert r.status_code == 422
+    assert r.json()["detail"] == "event_date_out_of_range"
+    nothing_applied(env, sid)
+
+
+@pytest.mark.parametrize("day", ["2026-10-06", "2026-10-08"])  # one day either side: midnight, clock skew
+def test_event_date_one_day_from_the_session_is_accepted(three_new_words, day):
+    env = three_new_words
+    data = start(env)
+    sid = data["session_id"]
+    event = ev("answer-candid-1", "candid", "answer", correct=True, question=question_for(data, "candid"),
+               at="2026-10-07T15:00:05Z", local_date=day)
+    r = upload(env, sid, [event])
+    assert r.status_code == 200
+    assert r.json() == {"accepted": ["answer-candid-1"]}
+    assert env.repo.get_session(sid).answered == 1
+
+
+@pytest.mark.parametrize("field, value", [
+    ("word", ""),
+    ("word", "x" * 101),
+    ("ms", -1),
+    ("ms", 86_400_001),
+    ("question_id", "q" * 65),
+    ("question_type", "t" * 65),
+])
+def test_event_field_bounds_reject_the_whole_batch(three_new_words, field, value):
+    env = three_new_words
+    sid = start(env)["session_id"]
+    good = ev("intro-candid-1", "candid", "intro_seen", at="2026-10-07T15:00:00Z")
+    bad = ev("intro-frugal-1", "frugal", "intro_seen", at="2026-10-07T15:00:10Z")
+    bad[field] = value
+    assert upload(env, sid, [good, bad]).status_code == 422
+    nothing_applied(env, sid)
+
+
+@pytest.mark.parametrize("bad_day", ["2026-13-01", "2026-02-30"])
+def test_impossible_calendar_dates_are_422_for_home_and_session_start(env, bad_day):
+    add_profile(env.repo, "p1", "Ava", [])
+    assert env.client.get(f"/api/profiles/p1/home?local_date={bad_day}").status_code == 422
+    assert env.client.post("/api/profiles/p1/sessions", json={"mode": "normal", "local_date": bad_day}).status_code == 422
+    assert env.repo.list_sessions("p1", 10) == []
+
+
+def test_keyerror_inside_the_apply_step_is_a_500_not_a_missing_session(three_new_words, monkeypatch):
+    env = three_new_words
+    sid = start(env)["session_id"]
+
+    def broken_apply(session, progress, events):
+        raise KeyError("a word with no progress row")
+
+    monkeypatch.setattr("app.api.learner.apply_events_to_state", broken_apply)
+    client = TestClient(env.app, raise_server_exceptions=False)  # the session exists: this is not a 404
+    assert client.post("/api/auth/site", json={"code": SITE_CODE}).status_code == 200
+    r = client.post(f"/api/sessions/{sid}/events",
+                    json={"events": [ev("intro-candid-1", "candid", "intro_seen", at="2026-10-07T15:00:00Z")]})
+    assert r.status_code == 500
+    assert env.repo.get_session(sid).answered == 0
+
+
+# --- finish------------------------------------------------------------------------------------
 
 
 def test_finish_returns_results_and_closes_the_session(three_new_words):

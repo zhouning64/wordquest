@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Literal
+from datetime import date, datetime
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 from app import clock
 from app.auth import require_site
@@ -15,20 +16,46 @@ from app.models import AnswerEvent, EventIn, Profile, ProfileSettings, Session, 
 from app.storage.base import BlobStore, Repository
 from app.triggers import maybe_enqueue_topup
 
-DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
+DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+AT_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z$"
 KEEP_PRACTICING_MAX = 5
 MAX_EVENTS_PER_UPLOAD = 500
+MAX_EVENT_MS = 86_400_000
+EVENT_DAY_WINDOW = 1  # an event may be dated at most this many days from its session's local_date
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_site)])
 
 
+def _real_day(value: str) -> str:
+    """A pattern-matched "YYYY-MM-DD" must also be a real calendar day: 2026-02-30 and 2026-13-01 are not."""
+    date.fromisoformat(value)  # ValueError becomes a 422
+    return value
+
+
+def _real_instant(value: str) -> str:
+    """A pattern-matched UTC timestamp must also have real fields: month 13 or hour 25 are not."""
+    datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S")  # ValueError becomes a 422
+    return value
+
+
 class SessionStart(BaseModel):
     mode: Literal["normal", "practice"] = "normal"
-    local_date: str = Field(pattern=DATE_PATTERN)
+    local_date: Annotated[str, Field(pattern=DATE_PATTERN), AfterValidator(_real_day)]
+
+
+class EventBody(EventIn):
+    """One answer event as the learner API accepts it: EventIn with the bounds the browser must meet."""
+
+    word: str = Field(min_length=1, max_length=100)
+    question_id: str | None = Field(default=None, max_length=64)
+    question_type: str | None = Field(default=None, max_length=64)
+    ms: int = Field(default=0, ge=0, le=MAX_EVENT_MS)
+    local_date: Annotated[str, Field(pattern=DATE_PATTERN), AfterValidator(_real_day)]
+    at: Annotated[str, Field(pattern=AT_PATTERN), AfterValidator(_real_instant)]
 
 
 class EventsUpload(BaseModel):
-    events: list[EventIn] = Field(default_factory=list, max_length=MAX_EVENTS_PER_UPLOAD)
+    events: list[EventBody] = Field(default_factory=list, max_length=MAX_EVENTS_PER_UPLOAD)
 
 
 class FinishBody(BaseModel):
@@ -77,6 +104,10 @@ def _session_seed(session_id: str) -> int:
     return int(hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16], 16)
 
 
+def _days_apart(a: str, b: str) -> int:
+    return abs((date.fromisoformat(a) - date.fromisoformat(b)).days)
+
+
 def _accuracy(correct: int, answered: int) -> int:
     if answered <= 0:
         return 0
@@ -89,7 +120,11 @@ def list_profiles(request: Request) -> list:
 
 
 @router.get("/profiles/{profile_id}/home")
-def profile_home(profile_id: str, request: Request, local_date: str = Query(pattern=DATE_PATTERN)) -> dict:
+def profile_home(
+    profile_id: str,
+    request: Request,
+    local_date: Annotated[str, Query(pattern=DATE_PATTERN), AfterValidator(_real_day)],
+) -> dict:
     repo = _repo(request)
     profile = _profile_or_404(repo, profile_id)
     words = eligible_words(repo, profile)
@@ -188,6 +223,9 @@ def post_events(session_id: str, body: EventsUpload, request: Request) -> dict:
     session = _session_or_404(repo, session_id)
     if not body.events:
         return {"accepted": []}
+    # Checked before anything is applied: one far-off date would freeze that word's schedule.
+    if any(_days_apart(e.local_date, session.local_date) > EVENT_DAY_WINDOW for e in body.events):
+        raise HTTPException(status_code=422, detail="event_date_out_of_range")
     events = [
         AnswerEvent(**event.model_dump(), session_id=session.id, profile_id=session.profile_id)
         for event in body.events
@@ -195,6 +233,8 @@ def post_events(session_id: str, body: EventsUpload, request: Request) -> dict:
     try:
         accepted = repo.apply_events(session.id, events, apply_events_to_state)
     except KeyError:
+        if repo.get_session(session.id) is not None:
+            raise  # the session exists, so this KeyError is a bug inside the apply step: surface it as a 500
         raise HTTPException(status_code=404, detail="session_not_found") from None
     return {"accepted": accepted}
 
