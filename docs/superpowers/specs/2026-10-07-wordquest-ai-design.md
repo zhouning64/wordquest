@@ -506,5 +506,5 @@ When AI is configured, a parent can "Regenerate → all" any starter word to get
 
 ## 16. Open items (resolved during implementation)
 
-1. **Image model** — provider resolved: **z.ai** (2026-10-07). At a checkpoint after the Learn page works, generate the same 5 words with `glm-image` (≈$0.015/picture) and `cogview-4-250304` (≈$0.01/picture), optionally comparing `standard` vs `hd` quality; the parent picks. Until a z.ai key is configured, `IMAGE_PROVIDER=none` (emoji scenes).
+1. **Image model** — resolved 2026-10-08 at checkpoint B: z.ai `IMAGE_MODEL=cogview-4-250304` with `IMAGE_QUALITY=standard` (`IMAGE_PROVIDER=openai_compatible`, `IMAGE_BASE_URL=https://api.z.ai/api/paas/v4`), picked by the parent after comparing `glm-image` and `cogview-4-250304` on the same 5 words (measured ≈69 s vs ≈8.5 s per picture; glm-image looked more polished, cogview-4 was judged good enough at a third of the time and two thirds of the price).
 2. **Cerebras rate limits** for the account tier — tune `GEN_CONCURRENCY` from observed 429s.

@@ -175,7 +175,8 @@ pictures with **z.ai**, through z.ai's OpenAI-style images API (`POST <base url>
    ```
    IMAGE_PROVIDER=openai_compatible
    IMAGE_BASE_URL=https://api.z.ai/api/paas/v4
-   IMAGE_MODEL=glm-image
+   IMAGE_MODEL=cogview-4-250304
+   IMAGE_QUALITY=standard
    IMAGE_API_KEY=<your z.ai API key>
    ```
 
@@ -194,7 +195,7 @@ prices on z.ai before making many pictures:
 | `glm-image` | $0.015 | `hd`, about 20 s | 1024–2048 px per side, multiples of 32 (z.ai default 1280x1280) |
 | `cogview-4-250304` | $0.01 | `standard`, about 5–10 s | 512–2048 px per side, multiples of 16 (z.ai default 1024x1024) |
 
-- Not sure which model? Make pictures for the same few words with each one (**↻ Regenerate… → Picture only**) and compare.
+- Picked at the image checkpoint (2026-10-08) after comparing both models on the same 5 words: `IMAGE_MODEL=cogview-4-250304` with `IMAGE_QUALITY=standard`. Measured there: about 8.5 s per picture for `cogview-4-250304` and about 69 s for `glm-image` (the table's times are z.ai's). To compare yourself, make pictures for the same few words with each model (**↻ Regenerate… → Picture only**).
 - `IMAGE_SIZE` (default `1024x1024`, valid for both models) is sent as `size`. WordQuest shrinks every picture to at
   most 768 px before storing it, so larger sizes rarely show.
 - `IMAGE_QUALITY` (default empty = the model's own default) is sent as `quality` only when set: `standard` (faster)
