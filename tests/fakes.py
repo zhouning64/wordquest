@@ -76,3 +76,30 @@ class FakeLLM:
         if not isinstance(item, dict):
             raise AssertionError(f"FakeLLM: scripted response for {name!r} must be a dict, got {type(item).__name__}")
         return LLMResult(data=copy.deepcopy(item), usage={"completion_tokens": 10}, finish_reason="stop")
+
+# ---- Task 12: fake image provider -------------------------------------------
+import io  # noqa: E402
+
+from PIL import Image  # noqa: E402
+
+from app.ai.images.base import ImageProvider  # noqa: E402
+
+
+class FakeImageProvider(ImageProvider):
+    """Returns a 32x32 PNG. The first `fail_times` calls raise RuntimeError.
+    Every prompt received (including failed calls) is recorded in `prompts`."""
+
+    name = "fake"
+
+    def __init__(self, fail_times: int = 0) -> None:
+        self.fail_times = fail_times
+        self.prompts: list[str] = []
+
+    async def generate(self, prompt: str) -> bytes:
+        self.prompts.append(prompt)
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise RuntimeError("fake image provider failure")
+        buf = io.BytesIO()
+        Image.new("RGB", (32, 32), (124, 92, 255)).save(buf, format="PNG")
+        return buf.getvalue()
