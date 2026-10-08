@@ -546,3 +546,143 @@ def test_q8_duplicate_within_batch_keeps_first():
 
 def test_q8_applies_to_legacy_too():
     assert only(GOOD["meaning"], existing_prompts=['What does "frugal" mean?'], legacy=True).startswith("Q8")
+
+
+# --- spell_it first-letter hint --------------------------------------------------------------------
+
+def kept_prompt(q: RawQuestion, word: str = WORD, **kw) -> str:
+    kept, drops = validate_questions(word, "6-8", make_card(word_parts=PARTS), [q], **kw)
+    assert drops == [], drops
+    return kept[0].prompt
+
+
+def test_hint_adds_the_first_letter_to_the_cue():
+    prompt = kept_prompt(GOOD["spell_it"])
+    assert prompt == 'Mom stays ___ by using coupons at the store. (means: careful with money; starts with "f")'
+    assert validate._CUE_AT_END.search(prompt)
+
+
+def test_hint_uses_the_accepted_form_and_counts_the_words_of_a_phrase():
+    adverb = rq("spell_it", "Grandpa shops ___ at the market. (means: in a way that saves money)", [], -1, ["Frugally"])
+    assert kept_prompt(adverb).endswith('(means: in a way that saves money; starts with "f")')
+    phrase = rq("spell_it", "We ate rice ___ pasta at the picnic. (means: as a swap for)", [], -1, ["in lieu of"])
+    prompt = kept_prompt(phrase, word="in lieu of")
+    assert prompt == 'We ate rice ___ pasta at the picnic. (means: as a swap for; starts with "i", 3 words)'
+    assert validate._CUE_AT_END.search(prompt)
+
+
+@pytest.mark.parametrize(
+    "cue",
+    [
+        '(means: careful with money; starts with "f")',
+        "(means: careful with money; starts with F)",
+        "(means: careful with money, starts with the letter f).",
+        '(Means: careful with money; starts with "g", 2 words)',
+    ],
+)
+def test_hint_replaces_a_hint_the_model_wrote(cue):
+    prompt = kept_prompt(variant("spell_it", prompt=f"Mom stays ___ by using coupons at the store. {cue}"))
+    assert prompt == 'Mom stays ___ by using coupons at the store. (means: careful with money; starts with "f")'
+
+
+def test_hint_never_rescues_a_cue_without_a_meaning():
+    reason = only(variant("spell_it", prompt="Mom stays ___ by using coupons. (means: ; starts with f)"))
+    assert reason is not None and reason.startswith("Q2")
+
+
+def test_hint_words_do_not_count_as_the_word():
+    q = rq("spell_it", "The race will ___ when the whistle blows. (means: begin)", [], -1, ["start"])
+    assert kept_prompt(q, word="start").endswith('(means: begin; starts with "s")')
+
+
+def test_hint_leaves_legacy_questions_unchanged():
+    kept, drops = vq([GOOD["spell_it"]], legacy=True)
+    assert drops == [] and kept[0].prompt == GOOD["spell_it"].prompt
+
+
+# --- Q9 ----------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "explanation",
+    [
+        "The first sentence uses frugal the right way.",
+        "The last choice is the only one about saving.",
+        "the second option shows careful spending.",
+        "Option B is right because frugal means careful.",
+        "Answer C is the one about saving money.",
+        "Choice 2 shows careful spending.",
+        "(A) shows careful spending.",
+        "A) shows careful spending.",
+    ],
+)
+def test_q9_explanation_must_not_name_a_choice_position(explanation):
+    assert only(variant("meaning", explanation=explanation)) == "Q9: explanation refers to a choice position"
+
+
+@pytest.mark.parametrize(
+    "explanation",
+    [
+        "A kid who saves money is frugal.",
+        "In a sentence, frugal describes careful spending.",
+        "This sentence shows careful spending, so frugal fits.",
+        "Ava was first to pick the cheaper option, which is frugal.",
+        "The best answer is careful with money.",
+    ],
+)
+def test_q9_allows_ordinary_wording(explanation):
+    assert only(variant("meaning", explanation=explanation)) is None
+
+
+# --- Q10 ---------------------------------------------------------------------------------------------
+
+MEANINGS = ["lasting a very short time", "very large and heavy", "full of bright colors", "loud and hard to ignore"]
+EPHEMERAL_USES = [
+    "The ephemeral rainbow faded in a minute.",
+    "The ephemeral mountain stood for ages.",
+    "Her ephemeral dog barked at the mail carrier.",
+    "The ephemeral rock was too heavy to lift.",
+]
+
+
+def reason_for(word: str, q: RawQuestion, **kw) -> str | None:
+    kept, drops = validate_questions(word, "9-12", make_card(), [q], **kw)
+    return drops[0].reason if drops else None
+
+
+@pytest.mark.parametrize(
+    "word, q",
+    [
+        ("ephemeral", rq("meaning", 'What does "ephem-eral" mean?', MEANINGS, 0)),
+        ("ephemeral", rq("meaning", 'What does "ephemerAl" mean?', MEANINGS, 0)),
+        ("self-esteem", rq("meaning", 'What does "selfesteem" mean?', MEANINGS, 0)),
+        ("in lieu of", rq("meaning", 'What does "inlieu of" mean?', MEANINGS, 0)),
+        ("ephemeral", rq("usage", 'Which sentence uses "ephemeral" correctly?',
+                         ["The ephemerAl rainbow faded in a minute."] + EPHEMERAL_USES[1:], 0)),
+    ],
+)
+def test_q10_misspelled_word_is_rejected(word, q):
+    assert reason_for(word, q) == "Q10: the word is misspelled"
+
+
+@pytest.mark.parametrize(
+    "word, prompt",
+    [
+        ("ephemeral", 'Ephemeral things fade fast. What does "ephemeral" mean?'),
+        ("ephemeral", 'What does "EPHEMERAL" mean?'),
+        ("ephemeral", 'What does "ephemerally" mean?'),
+        ("self-esteem", 'What does "self-esteem" mean?'),
+        ("self-esteem", "Self-esteem can be high or low. What does it mean?"),
+        ("in lieu of", 'In lieu of what? What does "in lieu of" mean?'),
+    ],
+)
+def test_q10_correct_spellings_pass(word, prompt):
+    assert reason_for(word, rq("meaning", prompt, MEANINGS, 0)) is None
+
+
+def test_q10_correctly_spelled_choices_pass():
+    assert reason_for("ephemeral", rq("usage", 'Which sentence uses "ephemeral" correctly?', EPHEMERAL_USES, 0)) is None
+
+
+def test_q9_and_q10_skip_legacy_questions():
+    assert only(variant("meaning", explanation="The first choice is right."), legacy=True) is None
+    assert reason_for("ephemeral", rq("meaning", 'What does "ephem-eral" mean?', MEANINGS, 0), legacy=True) is None

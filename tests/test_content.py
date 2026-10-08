@@ -444,6 +444,15 @@ async def test_check_items_never_contain_answers(logs, monkeypatch):
     assert "careful not to waste money or things" not in user
 
 
+async def test_blind_check_and_stored_question_get_the_spell_it_letter_hint(logs):
+    hinted = 'Nina saved her allowance because she was ___. (means: careful with money; starts with "f")'
+    llm = FakeLLM({QUESTION_BATCH: [{"questions": [rq("spell_it")]}],
+                   ANSWER_CHECK: [{"results": [ok("q1", fill="frugal")]}]})
+    qs = await gen(llm, logs).make_questions(WORD, BAND, make_card(), {"spell_it": 1}, [], 1)
+    assert [q.prompt for q in qs] == [hinted]
+    assert json.loads(llm.calls[1]["user"].splitlines()[1])["prompt"] == hinted
+
+
 async def test_existing_prompts_are_sent_and_repeats_dropped(logs, monkeypatch):
     captured: dict = {}
     real = content_mod.question_batch_prompt

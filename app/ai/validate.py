@@ -177,7 +177,7 @@ def validate_card(word: str, band: str, card: LearnCard, *, legacy: bool = False
     return CardCheck(card=cleaned, errors=[])
 
 # ---------------------------------------------------------------------------------------------
-# Questions (Q1–Q8)
+# Questions (Q1–Q10)
 # ---------------------------------------------------------------------------------------------
 @dataclass
 class Drop:
@@ -186,14 +186,47 @@ class Drop:
 
 
 _CUE_AT_END = re.compile(r"\(\s*means\s*:[^()]*[^\s()][^()]*\)\s*\.?\s*$", re.IGNORECASE)
+# The same closing cue split into its meaning and any "starts with ..." hint after it.
+_CUE_PARTS = re.compile(
+    r"\(\s*means\s*:(?P<meaning>[^()]*?)(?:[;,.:\-–—]\s*(?:starts|begins)\s+with\b[^()]*)?\)\s*\.?\s*$",
+    re.IGNORECASE,
+)
+# An explanation that points at a choice by position: "the first sentence", "option B", "choice 2", "(A)", "A)".
+_POSITION_REF = re.compile(
+    r"(?i:\bthe\s+(?:first|second|third|fourth|last)\s+(?:sentence|choice|option|answer)\b)"
+    r"|(?i:\b(?:option|choice|answer|sentence))\s+(?:[A-D]|[1-4])\b"
+    r"|\(?\b[A-D]\)"
+)
+# inflect.tokenize's token pattern with the case kept (typographic apostrophes and hyphens included).
+_RAW_TOKEN = re.compile(r"[^\W_]+(?:['’‘ʼ\-‐‑][^\W_]+)*")
 
 
 def _strip_cue(prompt: str) -> str:
     return _CUE_AT_END.sub("", prompt).strip()
 
 
-def _tidy(q: RawQuestion) -> RawQuestion:
-    """Trim whitespace, normalize any run of 3+ underscores to "___", normalize spell_it answers."""
+def _without_hint(prompt: str) -> str:
+    """The prompt with any "starts with ..." hint removed from its closing cue."""
+    m = _CUE_PARTS.search(prompt)
+    return f"{prompt[: m.start()]}(means:{m.group('meaning')})" if m else prompt
+
+
+def _add_letter_hint(prompt: str, answer: str) -> str:
+    """End the cue with the answer's first letter (and word count for a phrase), replacing any hint the
+    model wrote: `(means: X; starts with "f")`. A cue with no meaning becomes "(means: )", which Q2 rejects."""
+    m = _CUE_PARTS.search(prompt)
+    if m is None:
+        return prompt
+    meaning = m.group("meaning").strip()
+    words = len(answer.split())
+    hint = f'starts with "{answer[0]}"' + (f", {words} words" if words > 1 else "")
+    cue = f"(means: {meaning}; {hint})" if meaning else "(means: )"
+    return f"{prompt[: m.start()].rstrip()} {cue}"
+
+
+def _tidy(q: RawQuestion, *, legacy: bool = False) -> RawQuestion:
+    """Trim whitespace, normalize any run of 3+ underscores to "___", normalize spell_it answers, and
+    (AI questions only) add the first-letter hint to the spell_it cue so the blind check sees it."""
     update: dict = {
         "prompt": _BLANK_RUN.sub("___", q.prompt.strip()),
         "choices": [c.strip() for c in q.choices],
@@ -206,7 +239,34 @@ def _tidy(q: RawQuestion) -> RawQuestion:
             if norm and norm not in answers:
                 answers.append(norm)
         update["accepted_answers"] = answers
+        if answers and not legacy:
+            update["prompt"] = _add_letter_hint(update["prompt"], answers[0])
     return q.model_copy(update=update)
+
+
+def _case_ok(token: str) -> bool:
+    """lowercase, ALL CAPS, or only the first letter capitalized (sentence start)."""
+    return token in (token.lower(), token.upper(), token[:1].upper() + token[1:].lower())
+
+
+def _misspells_word(text: str, forms: set[str]) -> bool:
+    """True if text writes the word (or a form) with a hyphen added or dropped, a space dropped, or capitals
+    inside it ("ephem-eral", "ephemerAl", "selfesteem", "inlieu of"). An added space is not checked, so two
+    separate words ("every day") never count as a misspelling of one ("everyday")."""
+    squashed: dict[str, int] = {}  # form without hyphens/spaces -> its number of tokens
+    for form in forms:
+        key = form.replace("-", "").replace(" ", "")
+        squashed[key] = max(squashed.get(key, 0), form.count(" ") + 1)
+    raw = _RAW_TOKEN.findall(text)
+    for size in range(1, max(squashed.values(), default=0) + 1):
+        for i in range(len(raw) - size + 1):
+            window = raw[i : i + size]
+            norm = " ".join(tokenize(" ".join(window)))
+            if squashed.get(norm.replace("-", "").replace(" ", ""), 0) < size:
+                continue
+            if norm not in forms or not all(_case_ok(t) for t in window):
+                return True
+    return False
 
 
 @dataclass
@@ -248,7 +308,7 @@ def _problem(q: RawQuestion, ctx: _Ctx) -> str | None:
         blanks = q.prompt.count("___")
         if blanks != 1:
             return f"Q2: prompt has {blanks} blanks (need exactly 1)"
-        if contains_word(q.prompt.replace("___", " "), word, extra):
+        if contains_word(_without_hint(q.prompt).replace("___", " "), word, extra):
             return "Q2: prompt contains the word outside the blank"
         if q.type == "spell_it" and not _CUE_AT_END.search(q.prompt):
             return 'Q2: spell_it prompt must end with a "(means: ...)" cue'
@@ -308,6 +368,14 @@ def _problem(q: RawQuestion, ctx: _Ctx) -> str | None:
         if term is not None:
             return f"Q7: blocked term {term!r}"
 
+    # Q9 / Q10 (legacy exempt)
+    if not ctx.legacy:
+        if _POSITION_REF.search(q.explanation):
+            return "Q9: explanation refers to a choice position"
+        forms = set(ctx.fills)
+        if any(_misspells_word(text, forms) for text in [q.prompt, *q.choices]):
+            return "Q10: the word is misspelled"
+
     return None
 
 
@@ -320,7 +388,7 @@ def validate_questions(
     existing_prompts: Sequence[str] = (),
     legacy: bool = False,
 ) -> tuple[list[RawQuestion], list[Drop]]:
-    """Apply Q1–Q8 to each question independently. Returns (kept in original order, drops)."""
+    """Apply Q1–Q10 to each question independently. Returns (kept in original order, drops)."""
     extra = valid_extra_forms(word, card.forms)
     learn_sentences = [s.example for s in card.senses] + list(card.examples)
     learn_sentences += [card.right_use.sentence, card.wrong_use.sentence]
@@ -337,7 +405,7 @@ def validate_questions(
     kept: list[RawQuestion] = []
     drops: list[Drop] = []
     for index, original in enumerate(raw):
-        q = _tidy(original)
+        q = _tidy(original, legacy=legacy)
         reason = _problem(q, ctx)
         key = _norm(q.prompt)
         if reason is None and key in seen_prompts:

@@ -38,10 +38,15 @@ MIX = {"meaning": 1, "pick_word": 1, "fill_blank": 2, "usage": 1, "scenario": 2,
 def test_band_guide_covers_every_band_with_limits_and_settings():
     assert set(BAND_GUIDE) == set(BANDS)
     assert "15 words" in BAND_GUIDE["3-5"] and "pets" in BAND_GUIDE["3-5"] and "playground" in BAND_GUIDE["3-5"]
-    assert "20 words" in BAND_GUIDE["6-8"] and "science class" in BAND_GUIDE["6-8"] and "gaming" in BAND_GUIDE["6-8"]
+    assert "20 words" in BAND_GUIDE["6-8"] and "science class" in BAND_GUIDE["6-8"]
+    assert "video games" in BAND_GUIDE["6-8"]
     assert "28 words" in BAND_GUIDE["9-12"] and "literature" in BAND_GUIDE["9-12"] and "SAT" in BAND_GUIDE["9-12"]
     assert "harder than the target word" in BAND_GUIDE["3-5"]
+    assert "synonyms, antonyms, choices and explanations" in BAND_GUIDE["3-5"]
     assert "technical term" in BAND_GUIDE["6-8"]
+    assert "no battles, monsters or weapons" in BAND_GUIDE["6-8"] and "safe lab habits only" in BAND_GUIDE["6-8"]
+    assert 'never "kid"' in BAND_GUIDE["9-12"] and "invented person" in BAND_GUIDE["9-12"]
+    assert 'never "kid"' not in BAND_GUIDE["3-5"]
 
 
 @pytest.mark.parametrize("band", ["3-5", "6-8", "9-12"])
@@ -53,9 +58,22 @@ def test_learn_card_prompt_contents(band):
     for phrase in ("irregular", "strove", "1 to 3", "4 to 6", "memory_hook", "word_parts", "never invent",
                    "right_use", "wrong_use", "3 to 6 emoji", "image_scene", "any text, letters, numbers, signs"):
         assert phrase.lower() in user.lower(), phrase
+    for phrase in ("second meaning", "its own sense", "not a label", "real world", "sounds like itself",
+                   "hidden inside", "every dictionary meaning", "single picture", "whole range", "same part of speech"):
+        assert phrase.lower() in user.lower(), phrase
     assert "Never reuse a sentence" in user
     assert "school-appropriate" in system
+    assert "goggles" in system and "bouncing back from mistakes" in system
+    assert "Never copy the examples in these instructions" in system
     assert "JSON" in system
+
+
+def test_learn_card_prompt_word_parts_roots_depend_on_band():
+    _, young = learn_card_prompt("gigantic", "3-5")
+    _, older = learn_card_prompt("gigantic", "9-12")
+    assert "giant + -ic" in young and "giant + -ic" in older
+    assert "Latin, Greek or French" not in young
+    assert "Latin, Greek or French" in older
 
 
 def test_learn_card_prompt_mentions_band_sentence_limit():
@@ -90,12 +108,17 @@ def test_question_batch_prompt_contents():
     for sentence in CARD.examples + [s.example for s in CARD.senses] + [CARD.right_use.sentence, CARD.wrong_use.sentence]:
         assert f"- {sentence}" in user
     # the rules
-    for rule in ("exactly one defensible answer", "Test only the meanings", "(means: careful with money)",
+    for rule in ("exactly one defensible answer", "Ask only about the card's senses", "(means: careful with money)",
                  "copied exactly from the card's synonyms", "copied exactly from the card's antonyms",
-                 "every choice contains the word", "exactly one ___", "160 characters", "plausible"):
+                 "every choice contains the word", "exactly one ___", "160 characters", "plausible",
+                 "The app adds the first-letter hint itself", "at most 6 plain words",
+                 "Put each wrong choice into the blank", "never refer to a letter or position",
+                 'Say "kid" only for band 3-5', "never reuse a Learn-card situation", "no two questions",
+                 "Never copy the examples in these instructions"):
         assert rule in system, rule
     for qtype in MIX:
         assert f"- {qtype}:" in system
+    assert 'spelled correctly every time, with no added hyphens, spaces or capital letters' in user
 
 
 def test_question_batch_prompt_omits_zero_counts_and_handles_empty_lists():
@@ -127,6 +150,9 @@ def test_check_prompt_shows_only_what_the_learner_sees():
     assert "independently" in system
     assert "ambiguous" in system and "chosen_index" in system and "fill" in system
     assert "-1" in system
+    for rule in ("put EACH choice into the blank", "teacher would mark it right", "hardest",
+                 "grammatical, sensible sentence", "first letter of the answer", "words inside the hint"):
+        assert rule in system, rule
     for forbidden in ("answer_index", "accepted_answers", "explanation"):
         assert forbidden not in system
         assert forbidden not in user

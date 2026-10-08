@@ -66,6 +66,7 @@ BATCH_A: list[dict] = [
 ]
 
 # Six more valid questions with different prompts, spread over all three tiers (used for top-ups).
+# The spell_it cues already end with the first-letter hint validation adds, so stored prompts equal these.
 BATCH_B: list[dict] = [
     _q("meaning", "Which meaning fits the word frugal best?",
        ["spending money with care", "jumping very high", "talking too fast", "feeling very sleepy"], 0,
@@ -78,10 +79,12 @@ BATCH_B: list[dict] = [
        "Making decorations from old magazines saves money."),
     _q("synonym", "Pick the word that means almost the same as frugal.",
        ["economical", "careless", "noisy", "proud"], 0, "Economical also means not wasting money."),
-    {"type": "spell_it", "prompt": "Mom stayed ___ and bought the cheaper shoes. (means: careful with money)",
+    {"type": "spell_it",
+     "prompt": 'Mom stayed ___ and bought the cheaper shoes. (means: careful with money; starts with "f")',
      "choices": [], "answer_index": -1, "accepted_answers": ["frugal"],
      "explanation": "Choosing the cheaper shoes is frugal."},
-    {"type": "spell_it", "prompt": "The ___ campers reused every plastic bag. (means: careful not to waste)",
+    {"type": "spell_it",
+     "prompt": 'The ___ campers reused every plastic bag. (means: careful not to waste; starts with "f")',
      "choices": [], "answer_index": -1, "accepted_answers": ["frugal"],
      "explanation": "Reusing bags instead of buying new ones is frugal."},
 ]

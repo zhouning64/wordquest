@@ -256,7 +256,7 @@ An asyncio task started in the FastAPI lifespan runs `GEN_CONCURRENCY` workers (
 All calls use `response_format: {type: "json_schema", json_schema: {name, strict: true, schema}}` with `max_completion_tokens = LLM_MAX_COMPLETION_TOKENS`. Cerebras strict mode does not support `oneOf`, `minItems`/`maxItems`, or `pattern`, so: the root is always an object; every object sets `additionalProperties: false`; **every field is required** (type-specific fields use sentinels, §6.1); counts and per-type shapes are enforced by §7.5.
 
 1. **Learn card** — input: word, band style guide (§7.6). Output: all `WordContent` content fields including `forms`. Instruction: do not reuse the same sentence across fields.
-2. **Question batch** — root `{questions: [Q]}`. Input: word, band style guide, the card's `senses`, `examples`, `forms`, `word_parts`, `synonyms`, `antonyms`, and the requested mix. Instructions: test only the given senses; do not reuse any Learn-card sentence; distractors plausible for the band but clearly wrong; exactly one defensible answer; every `spell_it` prompt ends with a short definition cue, e.g. `(means: careful with money)`; `synonym`/`antonym` correct answers come from the card's lists; `word_parts` questions ask about a part named in the card's `word_parts`.
+2. **Question batch** — root `{questions: [Q]}`. Input: word, band style guide, the card's `senses`, `examples`, `forms`, `word_parts`, `synonyms`, `antonyms`, and the requested mix. Instructions: test only the given senses, but no wrong choice may be a correct use of any other sense; do not reuse any Learn-card sentence or situation, and vary scenes within a batch; distractors plausible for the band but clearly wrong (each wrong choice tried in the blank; no synonyms or near-synonyms as wrong choices); exactly one defensible answer; explanations name or quote the answer and never refer to a choice letter or position; every `spell_it` prompt ends with a short definition cue in the model's own words (≤ 6 words, no synonym or family word of the answer), e.g. `(means: careful with money)` — code then appends the answer's first letter (and word count for a phrase), `(means: careful with money; starts with "f")`, before validation, so the blind check sees it (legacy questions are unchanged); `synonym`/`antonym` correct answers come from the card's lists; `word_parts` questions ask about a part named in the card's `word_parts`.
    - **Initial mix (12):** tier 1 — `meaning`, `pick_word`, `fill_blank` ×2; tier 2 — `usage`, `scenario` ×2, `synonym`, `antonym`; tier 3 — `spell_it` ×2, `word_parts`. Substitutions: no antonyms → extra `scenario`; no synonyms → extra `usage`; empty `word_parts` → extra `spell_it`.
    - **Top-up:** requests `min(6, 40 − pool size)` questions for the tier(s) whose verified count is lowest relative to the initial mix (computed by the worker; not per profile), and includes the pool's existing prompts with an instruction not to repeat them.
 3. **Answer-key check (blind)** — root `{results: [{qid, chosen_index, fill, ambiguous, reason}]}`. Code assigns each candidate a `qid` before the call. The checker receives each question **exactly as the learner would see it** — prompt and choices only, never the answer key, the target word (unless it appears in the prompt), or the Learn card. It returns `chosen_index` (or `-1`) and `fill` (or `""`) for `spell_it`, plus `ambiguous` = true if more than one choice could be defended. A question is kept only if its `qid` appears exactly once, the checker's answer matches the key (`fill` must normalize to an entry of `accepted_answers`), and `ambiguous` is false. Missing, duplicate, or unknown `qid`s → unverified → dropped. Kept questions get `verified = true`.
@@ -282,13 +282,15 @@ A **Learn card** is rejected (attempt consumed) if any of these fail:
 
 A **question** is dropped (others in the batch survive) if any of these fail:
 - Q1 choice types: exactly 4 choices, distinct after case-folding and trimming, `answer_index` in 0–3, `accepted_answers == []`. `spell_it`: `choices == []`, `answer_index == -1`.
-- Q2 `fill_blank` and `spell_it`: prompt contains exactly one `___` and does not otherwise contain the word. `spell_it` prompt ends with a definition cue in parentheses.
+- Q2 `fill_blank` and `spell_it`: prompt contains exactly one `___` and does not otherwise contain the word (the code-added first-letter hint is ignored). `spell_it` prompt ends with a definition cue in parentheses.
 - Q3 `spell_it`: `accepted_answers` non-empty and every entry matches the word.
 - Q4 type-specific keys: `pick_word` and `fill_blank` — the correct choice is the target word (or a form); `meaning` — the correct choice is not identical to any distractor; `usage` — every choice contains the word; `synonym`/`antonym` — the correct choice appears in the card's `synonyms`/`antonyms`.
 - Q5 no reuse of Learn content: after case-folding, stripping punctuation, and filling `___` with the word and each form, neither the prompt nor any sentence-valued choice equals a Learn-card sentence (`examples`, `senses[].example`, `right_use`, `wrong_use`).
 - Q6 sentence length ≤ band limit + 5 words; explanation ≤ 160 chars.
 - Q7 no blocklisted term.
 - Q8 (top-ups) the normalized prompt does not equal an existing pool prompt.
+- Q9 the explanation does not refer to a choice by letter or position ("the first sentence", "option B", "choice 2", "(A)"); choices are shuffled. Legacy exempt.
+- Q10 the word is spelled correctly: no prompt or choice writes the word (or a form) with a hyphen added or dropped, a space dropped, or capitals inside it (`ephem-eral`, `ephemerAl`, `selfesteem`); a sentence-start capital or ALL CAPS is fine. Legacy exempt.
 
 **Blocklist matching** is whole-token after case-folding, including the §7.7 inflections of each entry; a rejection's error text names the blocked term.
 
@@ -298,9 +300,9 @@ Every rejection is logged with the raw model output (redacted) to `DATA_DIR/logs
 
 | Band | Max sentence words | Settings for examples | Definition style |
 |---|---|---|---|
-| `3-5` | 15 | school, pets, playground, family, cartoons | very plain words, no word harder than the target |
-| `6-8` | 20 | sports, gaming, science class, friendships, chores | plain, may use one technical term if explained |
-| `9-12` | 28 | history, literature, current events, jobs, debate | precise, SAT-style |
+| `3-5` | 15 | school, pets, playground, family, cartoons | very plain words, no word harder than the target anywhere (definitions, synonyms, choices, explanations) |
+| `6-8` | 20 | sports, video games (no battles, monsters or weapons), science class (safe lab habits only), friendships, chores | plain, may use one technical term if explained |
+| `9-12` | 28 | history, literature, current events, jobs, debate | precise, SAT-style; "student"/"person", never "kid"; facts true, invented people in historical settings |
 
 ### 7.7 Word-form matching (`app/ai/inflect.py`)
 
@@ -338,7 +340,7 @@ If no reviews are due and no new words are ready, the response says why ("Your w
 |---|---|---|
 | 1 — recognize | `meaning` (pick the definition), `pick_word` (definition → word), `fill_blank` (choose the word for the blank) | 0–1: 100% tier 1 |
 | 2 — use | `usage` (which sentence uses it correctly), `scenario` (which situation fits), `synonym` (closest meaning), `antonym` (opposite) | 2–3: 30% tier 1, 70% tier 2 |
-| 3 — recall | `spell_it` (type the word into a sentence; prompt ends with a definition cue), `word_parts` (4 choices: what a named part means, e.g. "In *benevolent*, *bene-* means…") | 4–5: 40% tier 2, 60% tier 3 |
+| 3 — recall | `spell_it` (type the word into a sentence; prompt ends with a definition cue and the answer's first letter), `word_parts` (4 choices: what a named part means, e.g. "In *benevolent*, *bene-* means…") | 4–5: 40% tier 2, 60% tier 3 |
 
 All types except `spell_it` are 4-choice.
 
