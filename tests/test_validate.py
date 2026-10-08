@@ -310,7 +310,7 @@ def test_legacy_exempts_example_minimum_and_right_wrong_use():
 
 def test_same_card_without_legacy_flag_is_rejected():
     errors = errors_for(legacy_card())
-    assert "L2: only 2 examples use the word (need 4)" in errors
+    assert "L2: only 1 examples use the word (need 4)" in errors  # examples[0] repeats the sense example (L9)
     assert "L4: right_use.sentence does not use the word" in errors
     assert "L4: wrong_use.why is empty" in errors
 
@@ -318,6 +318,63 @@ def test_same_card_without_legacy_flag_is_rejected():
 def test_legacy_still_needs_one_example_using_the_word():
     errors = errors_for(legacy_card(examples=["Kenji saved coins."]), legacy=True)
     assert errors == ["L2: only 0 examples use the word (need 1)"]
+
+
+# --- L8 forms / L9 repeated examples / typographic hyphens (cleaned, never a reason to reject) --------
+
+def test_l8_drops_a_multi_word_form_whose_last_word_is_not_the_word():
+    card = make_card(forms=["frugally", "more frugal", "most fragile", "very cheap", "frugality", "cheaper"])
+    check = validate_card(WORD, "6-8", card)
+    assert check.errors == []
+    # one-word forms are never dropped here (irregular forms such as "mice" fail the 3-letter rule too)
+    assert check.card.forms == ["frugally", "more frugal", "frugality", "cheaper"]
+
+
+def test_l8_keeps_phrase_forms_and_legacy_forms():
+    phrase_forms = ["takes for granted", "took for granted", "taking it for granted", "keeps in mind"]
+    card = make_card(
+        pos="verb phrase", forms=phrase_forms,
+        senses=[Sense(pos="verb phrase", definition="to not notice how much something helps you",
+                      example="Zoe takes her teacher's help for granted.")],
+        examples=["Aisha took her morning coffee for granted.", "Ben took sunny days for granted.",
+                  "Do you take clean water for granted?", "Leo never takes his friends for granted."],
+        right_use=RightUse(sentence="Kenji took his old bike for granted until it broke."),
+        wrong_use=WrongUse(sentence="Maya took the bus for granted to school.", why="It means not valuing something."),
+    )
+    assert validate_card("take for granted", "6-8", card).card.forms == phrase_forms
+    legacy = validate_card(WORD, "6-8", legacy_card(forms=["most fragile"]), legacy=True)
+    assert legacy.card.forms == ["most fragile"]
+
+
+def test_l9_example_that_repeats_another_card_sentence_is_dropped():
+    card = make_card()
+    repeats = ["mia is FRUGAL so she saves her allowance", card.right_use.sentence, card.wrong_use.sentence + " "]
+    check = validate_card(WORD, "6-8", make_card(examples=repeats + card.examples))
+    assert check.errors == []
+    assert check.card.examples == card.examples
+
+
+def test_l9_the_example_minimum_applies_after_dropping_repeats():
+    examples = make_card().examples[:3] + ["Mia is frugal, so she saves her allowance."]
+    check = validate_card(WORD, "6-8", make_card(examples=examples))
+    assert check.card is None
+    assert "L2: only 3 examples use the word (need 4)" in check.errors
+
+
+def test_typographic_hyphens_are_normalized_in_card_text():
+    examples = make_card().examples[:3] + ["Our fru\u00adgal club built a robot from spare\u2010parts."]
+    card = make_card(kid_def="A frugal person has self\u2011control with money.", examples=examples,
+                     synonyms=["thrifty", "penny\u2011wise"])
+    check = validate_card(WORD, "6-8", card)
+    assert check.errors == []  # the soft hyphen no longer splits "frugal", so the fourth example counts
+    assert check.card.kid_def == "A frugal person has self-control with money."
+    assert check.card.examples[3] == "Our frugal club built a robot from spare-parts."
+    assert check.card.synonyms == ["thrifty", "penny-wise"]
+
+
+def test_typographic_hyphens_are_left_alone_in_legacy_cards():
+    card = legacy_card(kid_def="careful with money and self\u2011control")
+    assert validate_card(WORD, "6-8", card, legacy=True).card.kid_def == "careful with money and self\u2011control"
 
 # =================================================================================================
 # Questions (Q1–Q8)
@@ -638,11 +695,11 @@ def test_hint_leaves_legacy_questions_unchanged():
     assert drops == [] and kept[0].prompt == GOOD["spell_it"].prompt
 
 
-@pytest.mark.parametrize("ending", ["(makes trouble smaller)", "(makes trouble smaller).", "( makes trouble smaller )"])
+@pytest.mark.parametrize("ending", ["(eases the trouble)", "(eases the trouble).", "( eases the trouble )"])
 def test_bare_cue_gets_the_means_label_and_hint(ending):
     q = rq("spell_it", f"Maya wanted to ___ the noise before bedtime. {ending}", [], -1, ["mitigate"])
     assert kept_prompt(q, word="mitigate") == (
-        'Maya wanted to ___ the noise before bedtime. (means: makes trouble smaller; starts with "m")'
+        'Maya wanted to ___ the noise before bedtime. (means: eases the trouble; starts with "m")'
     )
 
 
@@ -792,3 +849,205 @@ def test_q9_and_q10_skip_legacy_questions():
     kept, _ = vq([variant("meaning", explanation="The first choice is right.")], legacy=True)
     assert kept[0].explanation == "The first choice is right."  # legacy is never repaired
     assert reason_for("ephemeral", rq("meaning", 'What does "ephem-eral" mean?', MEANINGS, 0), legacy=True) is None
+
+
+# --- typographic hyphens in questions --------------------------------------------------------------
+
+def test_typographic_hyphens_are_normalized_in_question_text():
+    q = rq("spell_it", "Mom stays ___ with her pocket\u2011money. (means: careful with cash\u00ad)", [], -1,
+           ["fru\u00adgal"], explanation="Saving pocket\u2010money is frugal.")
+    kept, drops = vq([q, variant("synonym", choices=["lazy", "thrifty", "well\u2011known", "curious"])])
+    assert drops == []
+    assert kept[0].prompt == 'Mom stays ___ with her pocket-money. (means: careful with cash; starts with "f")'
+    assert kept[0].accepted_answers == ["frugal"] and kept[0].explanation == "Saving pocket-money is frugal."
+    assert kept[1].choices == ["lazy", "thrifty", "well-known", "curious"]
+
+
+def test_typographic_hyphens_are_left_alone_in_legacy_questions():
+    q = variant("synonym", choices=["lazy", "thrifty", "well\u2011known", "curious"])
+    kept, _ = vq([q], legacy=True)
+    assert kept[0].choices[2] == "well\u2011known"
+
+
+# --- Q11 wrong choices that are the word or a card synonym ----------------------------------------
+
+@pytest.mark.parametrize(
+    "q, reason",
+    [
+        (variant("synonym", choices=["lazy", "thrifty", "frugally", "curious"]),
+         "Q11: a wrong choice is the word or a form of it"),
+        (variant("antonym", choices=["quiet", "Frugal", "wasteful", "careful"]),
+         "Q11: a wrong choice is the word or a form of it"),
+        (variant("synonym", choices=["lazy", "thrifty", " Economical ", "curious"]),  # a second right answer
+         "Q11: a wrong choice is one of the card's synonyms"),
+        (variant("antonym", choices=["quiet", "THRIFTY", "wasteful", "careful"]),
+         "Q11: a wrong choice is one of the card's synonyms"),
+        (variant("pick_word", choices=["economical", "frugal", "fragile", "famous"]),
+         "Q11: a wrong choice is one of the card's synonyms"),
+    ],
+)
+def test_q11_wrong_choice_is_the_word_or_a_card_synonym(q, reason):
+    assert only(q) == reason
+
+
+@pytest.mark.parametrize(
+    "q",
+    [
+        variant("synonym", choices=["wasteful", "thrifty", "brave", "curious"]),  # an antonym is a fine distractor
+        variant("synonym", choices=["thriftless", "thrifty", "brave", "curious"]),  # only whole synonyms count
+        variant("fill_blank", choices=["thrifty", "noisy", "frugal", "sleepy"]),  # fill_blank is not covered
+    ],
+)
+def test_q11_allows_other_distractors(q):
+    assert only(q) is None
+
+
+def test_q11_skips_legacy_questions():
+    assert only(variant("antonym", choices=["quiet", "thrifty", "wasteful", "careful"]), legacy=True) is None
+
+
+# --- Q12 giveaway: a choice contains the word -----------------------------------------------------
+
+@pytest.mark.parametrize(
+    "q",
+    [
+        variant("meaning", choices=["careful not to waste money", "very angry about losing", "fast at running races",
+                                    "being frugal with time"]),
+        variant("scenario", choices=["Ava packs lunch from home to save money for a trip.",
+                                     "Ben is frugally buying three snacks.", "Cara leaves her jacket at the park.",
+                                     "Dev sings loudly in the hallway."]),
+        variant("synonym", choices=["lazy", "thrifty", "not frugal", "curious"]),
+        variant("antonym", choices=["quiet", "early", "wasteful", "never frugal"]),
+        variant("word_parts", choices=["fear", "a frugal friend", "fast", "fruit or value"]),
+    ],
+)
+def test_q12_a_choice_that_contains_the_word_gives_it_away(q):
+    assert only(q) == "Q12: a choice contains the word"
+
+
+def test_q12_does_not_apply_to_usage_pick_word_fill_blank_or_legacy():
+    for qtype in ("usage", "pick_word", "fill_blank"):
+        assert only(GOOD[qtype]) is None, qtype
+    giveaway = variant("synonym", choices=["lazy", "thrifty", "not frugal", "curious"])
+    assert only(giveaway, legacy=True) is None
+
+
+# --- Q13 spell_it cue word that starts with the answer's letter -----------------------------------
+
+@pytest.mark.parametrize(
+    "word, prompt, accepted",
+    [
+        (WORD, "Mom stays ___ by using coupons at the store. (means: fine with less)", ["frugal"]),
+        (WORD, "Grandpa shops ___ at the market. (means: Fine with spending less)", ["frugally"]),
+        ("gigantic", "The ___ whale swam past our boat. (means: great size)", ["gigantic"]),
+        ("in lieu of", "We ate rice ___ pasta at the picnic. (means: instead of)", ["in lieu of"]),
+    ],
+)
+def test_q13_cue_word_with_the_answers_first_letter_is_rejected(word, prompt, accepted):
+    q = rq("spell_it", prompt, [], -1, accepted)
+    kept, drops = validate_questions(word, "6-8", make_card(word_parts=PARTS), [q])
+    assert [d.reason[:4] for d in drops] == ["Q13:"]
+
+
+@pytest.mark.parametrize(
+    "cue",
+    [
+        "(means: careful with money)",
+        "(means: from a small budget)",  # "from" is a stopword
+        "(means: few buys, no waste)",  # "few" is shorter than 4 letters
+        "(means: careful with money; first letter: f)",  # a hint the model wrote is not part of the meaning
+        '(means: careful with money; starts with "f")',
+    ],
+)
+def test_q13_stopwords_short_words_and_the_hint_do_not_count(cue):
+    assert only(variant("spell_it", prompt=f"Mom stays ___ by using coupons at the store. {cue}")) is None
+
+
+def test_q13_skips_legacy_questions():
+    assert only(variant("spell_it", prompt="Mom stays ___ by using coupons. (means: fine with less)"),
+                legacy=True) is None
+
+
+# --- Q5 near-copies of Learn-card sentences ---------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "q",
+    [
+        # the same first name as a card sentence plus 3+ other shared content words (here 45% shared)
+        variant("fill_blank", prompt="Leo was ___ with paint, so the whole art club poster got finished "
+                                     "before lunch at school today."),
+        # a different name, but 60% or more of the content words are shared
+        variant("fill_blank", prompt="Maya was ___ with paint and finished the whole poster."),
+        variant("scenario", choices=["Sam fixed his old skateboard instead of buying a new one.",
+                                     "Ben buys three snacks he will not eat.", "Cara leaves her jacket at the park.",
+                                     "Dev sings loudly in the hallway."]),
+        # a usage choice that copies the card's kid_def (the word itself is not counted)
+        variant("usage", choices=GOOD["usage"].choices[:3]
+                + ["A frugal person spends money carefully and never wastes food or cash."]),
+        variant("spell_it", prompt="Our science club built a ___ robot from spare parts. (means: careful with money)"),
+    ],
+)
+def test_q5_near_copy_of_a_learn_card_sentence_is_rejected(q):
+    assert only(q) == "Q5: near-copy of a Learn-card sentence"
+
+
+@pytest.mark.parametrize(
+    "q",
+    [
+        # a different first name and 4 shared words, but only 36% of the content words
+        variant("fill_blank", prompt="Maya was ___ with paint, so the whole art club poster got finished "
+                                     "before lunch at school today."),
+        # the same name with only one other shared content word
+        variant("fill_blank", prompt="Leo was ___ with paint at the bake sale on Friday morning."),
+        # 2 of 4 content words shared; the word itself is not counted (it would make 3 of 5 = 60%)
+        variant("usage", choices=GOOD["usage"].choices[:3] + ["The frugal team reused paper cups."]),
+        # shared stopwords and short words do not count
+        variant("fill_blank", prompt="She was so ___ with all of her things, and he is too."),
+        # definitions are not compared with the card (a correct definition overlaps the kid_def by design)
+        variant("meaning", choices=["spends money carefully and does not waste food or cash", "very angry about losing",
+                                    "fast at running races", "happy to share secrets"]),
+        variant("pick_word", prompt="Which word means spends money carefully and does not waste food or cash?"),
+    ],
+)
+def test_q5_allows_questions_that_only_share_a_few_words(q):
+    assert only(q) is None
+
+
+def test_q5_near_copy_skips_legacy_questions():
+    q = variant("fill_blank", prompt="Maya was ___ with paint and finished the whole poster.")
+    assert only(q, legacy=True) is None
+
+
+# --- Q9 more positional shapes and negated references ----------------------------------------------
+
+@pytest.mark.parametrize(
+    "explanation",
+    [
+        "The first one is right because Ava saves her money.",
+        "Definition 1 is wrong and definition 3 is right.",  # two references: no safe repair
+        "Sentence 0 is right and sentence 2 is not.",
+        # a negated reference is never repaired into a false statement
+        "The first sentence does not use frugal correctly.",
+        "Sentence 2 isn't about saving, so it is wrong.",
+        "Option B never shows careful spending.",
+        "Choice 3 cannot be right; frugal is about money.",
+        "Not the first choice: frugal means careful with money.",
+    ],
+)
+def test_q9_more_positional_shapes_and_negated_references_are_rejected(explanation):
+    assert only(variant("meaning", explanation=explanation)) == "Q9: explanation refers to a choice position"
+
+
+@pytest.mark.parametrize(
+    "explanation, repaired",
+    [
+        ("Sentence 0 uses frugal to mean careful with money.", "The correct sentence uses frugal to mean careful with money."),
+        ("The first definition matches careful spending.", "The correct definition matches careful spending."),
+        ("Only definition 2 is about money.", "Only the correct definition is about money."),
+        ("The first sentence shows saving. The others do not.", "The correct sentence shows saving. The others do not."),
+    ],
+)
+def test_q9_more_positional_shapes_are_repaired(explanation, repaired):
+    kept, drops = vq([variant("meaning", explanation=explanation)])
+    assert drops == []
+    assert kept[0].explanation == repaired

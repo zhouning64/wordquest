@@ -22,10 +22,12 @@ _BAND_FACTS: dict[str, tuple[str, str, str]] = {
     ),
     "9-12": (
         "grades 9-12 (about ages 14 to 18)",
-        "history, literature, current events, jobs, debate",
+        "history, literature, science, jobs, school debate club (school or science topics; no elections, voting, "
+        "protests or political causes)",
         'precise, SAT-style definitions that are still clear on the first read. Learners are teens: say "student" '
-        'or "person", never "kid". Every factual claim must be true; never invent thoughts or deeds of real '
-        "historical people (use an invented person in a historical setting).",
+        'or "person", never "kid". Every sentence starts with a person or thing, never with a setting phrase. '
+        "Mention a real period or event only if every fact in the sentence is true; no death tolls or disasters. "
+        "Never invent thoughts or deeds of real historical people (use an invented person in a historical setting).",
     ),
 }
 
@@ -65,9 +67,8 @@ Fill every field of the schema. Use "" or [] when a field does not apply.
 
 def learn_card_prompt(word: str, band: str) -> tuple[str, str]:
     limit = BAND_MAX_WORDS[band]
-    roots = "" if band == "3-5" else (
-        " or a well-known Latin, Greek or French root (mitigate: mitis (mild) + agere (to make); "
-        "ephemeral: epi + hemera (day) = lasting a day; in lieu of: lieu (French: place) = in place of)"
+    parts = "prefix, suffix, base word or familiar hidden word" if band == "3-5" else (
+        "prefix, suffix, base word, familiar hidden word, or Latin, Greek or French root"
     )
     user = f"""Word: "{word}"
 
@@ -75,23 +76,24 @@ def learn_card_prompt(word: str, band: str) -> tuple[str, str]:
 
 Write the Learn card for "{word}". Field by field:
 - pos: the part(s) of speech used in your senses, e.g. "adjective" or "noun / verb".
-- forms: every other form of "{word}" a reader might meet (plurals, verb tenses, -ing forms, comparatives, adverbs), including irregular ones, e.g. strive -> strives, strove, striven, striving; mouse -> mice. For a phrase, inflect the phrase, e.g. give up -> gives up, gave up, given up, giving up. Lowercase. Do not repeat "{word}" itself. Use [] if there are no other forms.
+- forms: the inflections and derived words of the senses you give (plurals, verb tenses, -ing forms, comparatives, adverbs), including irregular ones, e.g. strive -> strives, strove, striven, striving; mouse -> mice. For a phrase, inflect the phrase, e.g. give up -> gives up, gave up, given up, giving up. Lowercase. Do not repeat "{word}" itself. Use [] if there are no other forms.
 - short_def: the core meaning in at most 90 characters, kid-friendly, without using "{word}" or its forms.
-- kid_def: a fuller explanation in at most 220 characters: what it means and when or why people use it. For a feeling or character word, describe the whole range, not only the good end (self-esteem: how you feel about yourself and your worth; it can be high or low).
-- senses: 1 to 3 different meanings that a learner in this band is likely to meet, most common first. Include a second meaning when learners in this band meet it in books (curious = strange), but never pad with rare meanings. Every part of speech used in forms or in any example needs its own sense (no "braved" in an example when only the adjective is listed). Each sense has its own pos, a plain "definition", and an "example" sentence that uses "{word}" (or one of its forms) in that meaning.
-- examples: 4 to 6 new sentences. Each one uses "{word}" or one of its forms and is set in a different setting from the band list, so the meaning is clear from the context alone. Vary the shape: statements, a question, a line of dialogue. Use another form only when it is common and natural, with a listed meaning, and grammatical (never "felt ephemerally", or "most curious" with nothing compared). Show the setting through details, not a label ("In the novel,", "During the Renaissance,"). Every sentence must make sense in the real world (no "a candid photo of bubbles", no hugging someone you cannot meet).
-- memory_hook: one or two short sentences that make the meaning stick. Best: a true root from word_parts or a familiar word hidden inside it (gigantic has "giant"), turned into a picture; otherwise a picture or mini story of the meaning. Use a sound-alike only if it really sounds like part of the word said aloud (same stressed syllable and vowel sounds: "lieu" sounds like "loo", not "leaf" or "lie"; pragmatic is stressed on "MAT", gigantic on "GAN"). Never say the word sounds like itself. If unsure, use a picture story.
-- word_parts: give the parts whenever a real root, prefix, base word or familiar hidden word points to the meaning: a hidden familiar word (gigantic: giant + -ic = like a giant){roots}. Name each part with its meaning and show how they combine. Use "" only if no such part exists or you are not certain it is real. Never invent an etymology.
-- synonyms: 0 to 5 words or short phrases with nearly the same meaning that a learner in this band already uses, easiest first (3-5 learners say "huge", "scared", "unwilling", not "inquisitive", "loath", "apathetic"). Same part of speech as "{word}". Never "{word}", one of its forms, or an entry containing it ("low self-esteem"). Use [] if nothing fits well.
-- antonyms: 0 to 5 true opposites, same rules (not "steady" for ephemeral). Use [] if the word has no clear opposite.
-- right_use.sentence: one more new sentence that uses "{word}" correctly and contains the clue that shows the meaning (for brave: the scary or hard thing being faced). It must make sense in the real world.
-- wrong_use.sentence: a misuse a real student in this band might make: a well-known mix-up ("in lieu of" used to mean "because of"), a look-alike word (candid / candied, mitigate / militate), or "{word}" used for a related but different idea; never a random pairing ("the brave cake"). It must be wrong in meaning, not only in grammar, under EVERY dictionary meaning and idiom of "{word}", including ones not listed ("a brave outfit" = bold is correct English; "tenacious" can mean sticky). wrong_use.why: one short, true sentence that says what is wrong and what would be right; it agrees with the rest of the card and never claims a synonym works where "{word}" does not.
+- kid_def: a fuller explanation in at most 220 characters: what it means and when or why people use it. For a feeling or character word, describe the whole range, not only the good end.
+- senses: 1 to 3 meanings of "{word}" itself that a learner in this band is likely to meet, most common first. Derived words with another suffix (-ly, -ness, -ity, -ion, -ment, -ance, -ence, -ery) share the sense they come from and never get a sense or part of speech of their own; a sense gets a part of speech only when "{word}" itself, or a simple inflection of it (-s, -ed, -ing), is used that way. Include a second meaning when learners in this band meet it in books, but never a rare or technical sense, and never one that is the main sense without its key idea. Each sense has its own pos, a plain "definition", and an "example" sentence that uses "{word}" (or one of its forms) in that meaning.
+- examples: 4 to 6 new sentences. Each one uses "{word}" or one of its forms and is set in a different setting from the band list, so the meaning is clear from the context alone. Vary the shape: statements, a question, a line of dialogue. Use another form only when it is common, natural and grammatical, with a listed meaning. Show the setting through details, not a label. Every sentence must make sense in the real world.
+- memory_hook: one or two short sentences that make the meaning stick. Best: a familiar word hidden inside it or a root, turned into a picture (use a root only if it is the one in word_parts); otherwise a picture or mini story of the meaning. Use a sound-alike only if it really sounds like part of the word said aloud (same stressed syllable and vowel sounds: "lieu" sounds like "loo", not "leaf" or "lie"; pragmatic is stressed on "MAT", gigantic on "GAN"). Never say the word sounds like itself. If unsure, use a picture story.
+- word_parts: give the parts whenever a real {parts} points to the meaning, written as "<part> (<meaning>) + <part> (<meaning>) = <combined meaning>". Name the real source word and its dictionary meaning; never guess a root's meaning from a modern English word it resembles. If you cannot name the source word with certainty, use "".
+- synonyms: 0 to 5 words or short phrases with nearly the same meaning that a learner in this band already uses, easiest first (3-5 learners say "huge", "scared", "unwilling", not "inquisitive", "loath", "apathetic"). Same part of speech as "{word}". Never "{word}", one of its forms, or an entry containing it. Use [] if nothing fits well.
+- antonyms: 0 to 5 true opposites, same rules. Use [] if the word has no clear opposite.
+- right_use.sentence: one more new sentence that uses "{word}" correctly and contains the clue that shows the meaning. It must make sense in the real world.
+- wrong_use.sentence: first pick one real word students confuse with "{word}" (a look-alike or a near-meaning word); write a sentence where that other word is right and "{word}" is wrong in meaning under every dictionary meaning and idiom of "{word}", including ones not listed. Never make it wrong only because the subject is an object, animal or weather, or because the action fails. wrong_use.why: one short, true sentence: "{word}" means …; this sentence needs "<other word>".
 - image_scene: one kid-safe moment an illustrator can draw in a single picture (no change over time) that shows the meaning at a glance: who is there, where they are, and what is happening, in 1 or 2 sentences. The picture must not contain any text, letters, numbers, signs, symbols, or speech bubbles, and no real people, famous characters, or brands.
 - emoji_scene: 3 to 6 emoji that together hint at the meaning, like a tiny picture story. Emoji only: no letters, digits, or words.
 
 Rules:
 - Never reuse a sentence: the sense examples, the examples, right_use, and wrong_use are all different sentences.
 - Every sentence has at most {limit} words.
+- Use "more/most {word}" only when two or more things are compared.
 - Spell "{word}" correctly every time, in the memory_hook too: never split it or respell it with letters changed or missing."""
     return _LEARN_SYSTEM, user
 
@@ -103,16 +105,16 @@ _QUESTION_SYSTEM = f"""You are the quiz writer for WordQuest, a vocabulary app f
 
 {_SAFETY}
 
-Question types (use exactly these "type" values):
-- meaning: ask what the word means, e.g. 'What does "frugal" mean?' or 'In "The frugal team reused old jerseys," what does "frugal" mean?'. The 4 choices are short definitions of similar length and style (the right one must not be the only long one); exactly one is correct.
-- pick_word: give a definition (without the word) and ask which word fits it. The 4 choices are single words of the same part of speech; the correct one is the word itself. No wrong choice may also fit the definition: never the card's synonyms or near-synonyms ("pride" for self-esteem, "instead" for in lieu of). For a phrase, the choices are phrases of the same kind.
-- fill_blank: one new sentence with exactly one ___ (three underscores) where the word goes, and a clue that only the word satisfies (e.g. 'Maya was ___ to join the club, so she waited by the door until a friend pulled her in'). The word must not appear anywhere else in the sentence. The 4 choices all fit the grammar of the blank; the correct one is the word (or the form of it that fits); no other choice may be any form of the word. Put each wrong choice into the blank: if it makes a true, sensible sentence, change the sentence or the choice. Never use the card's synonyms or a near-synonym as a wrong choice; use an opposite only if the clue clearly rules it out. With the answer the sentence is grammatical: an adjective goes before a noun or after is/was/felt/seemed, never in a verb or noun slot.
-- usage: ask 'Which sentence uses "<word>" correctly?'. The 4 choices are grammatical sentences and every choice contains the word (or a form of it). Exactly one uses it correctly; each other choice gives the word a meaning it never has (e.g. 'The frugal paint was shiny') and stays wrong under every sense, including ones not on the card. A correct use in an odd situation is NOT a misuse ("The curious dog ran fast" is correct). For a replacement word like "in lieu of", wrong choices pair things that cannot stand in for each other, never two swappable activities.
-- scenario: if the word describes a person's behaviour or feeling, ask which person fits ('Which person is being frugal?'); if it describes things, size, time, or an action on something, ask which thing or action fits ('Which of these would you call gigantic?', 'Which step would best mitigate the flood damage?'). The 4 choices are short situations; exactly one shows a listed sense plainly and literally (no figurative stretch like "a gigantic effort") and it has no giveaway synonym that the wrong choices lack. Use the word in natural English (never "being gigantic", "a mitigating attitude", "an ephemeral habit").
-- synonym: ask which choice is closest in meaning to the word. The correct choice is copied exactly from the card's synonyms (the one easiest for the band); the other choices are not synonyms, not weaker forms of the same idea (for gigantic: not "large"), and not related words.
-- antonym: ask which choice is most nearly the opposite of the word. The correct choice is copied exactly from the card's antonyms; the other choices are neither opposites nor synonyms of the word, and not synonyms of each other (no odd one out like massive / tiny / enormous / colossal).
-- spell_it: a typing question. One new sentence with exactly one ___ where the word goes (the word must not appear anywhere else); the sentence itself shows the meaning (e.g. 'Maya was ___ with her allowance and saved half of it every week'). End with a cue in parentheses written like this: (means: careful with money). The cue is at most 6 plain words in your own words, not the card's definition, and never contains a synonym or family word of the answer (no "courage" for brave, "reduce" for mitigate, "instead of" for in lieu of, "practical" for pragmatic). Each spell_it question gets a different cue. The app adds the answer's first letter (and, for a phrase, the number of words) to the cue itself, so never write that hint yourself. The sentence, the cue and that first letter together must fit this word and no other: if a synonym with the same first letter would also fit, change the sentence. choices = [], answer_index = -1, accepted_answers = the form the blank's grammar needs, lowercase ('She answered ___.' needs "candidly", not "candid").
-- word_parts: ask what one part named in the card's word parts means, e.g. 'In "benevolent", the part "bene-" means...'. The 4 choices are short meanings; the correct one matches the card's word parts.
+Question types (use exactly these "type" values; <word> stands for the target word):
+- meaning: ask 'What does "<word>" mean?', or quote one new sentence that uses it and ask what it means there. The 4 choices are short definitions of similar length and style (the right one must not be the only long one); exactly one is correct.
+- pick_word: give a definition (without the word) and ask which word fits it. The 4 choices are single words of the same part of speech; the correct one is the word itself. No wrong choice may also fit the definition: never a card synonym or near-synonym. For a phrase, the choices are phrases of the same kind.
+- fill_blank: one new sentence with exactly one ___ (three underscores) where the word goes; the word appears nowhere else in it. Choose the three wrong choices first (they fit the grammar of the blank and are never a form of the word, a card synonym or a near-synonym), then write a clue that states the meaning in other plain words so that each wrong choice makes the sentence false or silly. Naming an activity is not a clue. Never use as a wrong choice a feeling, manner or action that could also describe the person or scene. The correct choice is the word (or the form of it that fits), and with it the sentence is grammatical: an adjective goes before a noun or after is/was/felt/seemed, a noun goes in a noun slot, a verb keeps its preposition.
+- usage: ask 'Which sentence uses "<word>" correctly?'. The 4 choices are grammatical sentences and every choice contains the word (or a form of it). Exactly one uses it correctly; each other choice gives the word a meaning it never has and stays wrong under every sense, including ones not on the card. A correct use in an odd or ordinary situation is NOT a misuse. For a word about replacing something, wrong choices pair things that cannot stand in for each other.
+- scenario: if the word describes a person's behaviour or feeling, ask which person fits; otherwise ask which thing, action or situation fits. Use the word in natural English: ask "Which of these would you call <word>?" only for a noun or adjective; for anything else ask which sentence or situation shows it. The 4 choices are short situations; exactly one shows a listed sense plainly and literally (no figurative stretch), with no giveaway synonym that the wrong choices lack.
+- synonym: ask which choice is closest in meaning to the word. The correct choice is copied exactly from the card's synonyms (the one easiest for the band); the other choices are not synonyms, not weaker forms of the same idea, and not related words.
+- antonym: ask which choice is most nearly the opposite of the word. The correct choice is copied exactly from the card's antonyms; the other choices are neither opposites nor synonyms of the word, and not synonyms of each other (no odd one out).
+- spell_it: a typing question. One new sentence with exactly one ___ where the word goes (the word appears nowhere else); the sentence itself shows the meaning. End with a cue in parentheses written like this: (means: <short meaning>). The cue is at most 6 plain words in your own words, not the card's definition, and never contains a synonym or family word of the answer. Each spell_it question gets a different cue. The app adds the answer's first letter (and, for a phrase, the number of words) to the cue itself, so never write that hint yourself. The sentence, the cue and that first letter together must fit this word and no other: if a synonym with the same first letter would also fit, change the sentence. choices = [], answer_index = -1, accepted_answers = the form the blank's grammar needs, lowercase (an adverb slot needs the adverb form).
+- word_parts: ask what one part named in the card's word parts means: 'In "<word>", the part "<part>" means...'. The 4 choices are short meanings; the correct one matches the card's word parts.
 
 Field rules:
 - Every type except spell_it: exactly 4 different choices, answer_index = the position (0 to 3) of the correct choice, accepted_answers = []. Spread the correct position across 0, 1, 2 and 3.
@@ -120,7 +122,8 @@ Field rules:
 - explanation: at most 160 characters, friendly and plain; says why the answer is right by naming or quoting it. Choices are shuffled before the learner sees them, so never refer to a letter or position ("A", "C", "the first sentence").
 - Ask only about the card's senses, but make sure no wrong choice is a correct use of any other meaning of the word.
 - Say "kid" only for band 3-5; otherwise say "student" or "person".
-- Never copy a sentence from the Learn card, not even with the word blanked out, and never reuse a Learn-card situation with new names or a few words changed (if the card has Priya covering a spill with a cloth, no question is about a spill). Every sentence you write is new.
+- Use "more/most <word>" only when two or more things are compared.
+- Never copy a sentence from the Learn card, not even with the word blanked out, and never reuse a Learn-card situation with new names or a few words changed. Every sentence you write is new.
 - Vary situations: no two questions in one batch share a scene.
 - Do not repeat or closely reword any existing question.
 - {_NO_COPY}
@@ -180,14 +183,12 @@ Remember: every sentence has at most {BAND_MAX_WORDS[band]} words, every explana
 # ---------------------------------------------------------------------------------------------
 # 3. Blind answer-key check
 # ---------------------------------------------------------------------------------------------
-_CHECK_SYSTEM = f"""You are a careful, strong student taking a vocabulary quiz. Solve every question yourself, independently, using only the question text and its choices. Then say whether the question allows exactly one good answer.
+_CHECK_SYSTEM = f"""You are a careful, strong student taking a vocabulary quiz. Solve every question yourself, independently, using only the question text and its choices.
 
 For each question:
-- Multiple choice (it has 4 choices): chosen_index = the 0-based position of the one best choice (0 = first choice), fill = "".
-- Typing question (type spell_it, no choices): chosen_index = -1, fill = what you would type in the ___ (one word, or as many words as the hint says), in the exact form that fits the sentence, lowercase.
-- Before deciding, put EACH choice into the blank (or test each sentence against the question) and ask whether a teacher would mark it right. Do not prefer a choice because it is the hardest or most "vocabulary-like" word.
-- Typing questions: the hint ends with the answer's first letter (and, for a phrase, the number of words). First try the words inside the hint and their common synonyms that start with that letter.
-- ambiguous = true if two or more choices pass; if no choice is right, or no choice makes a grammatical, sensible sentence; if the question is confusing; or (typing) if another word fits the blank and the hint as well as your answer. Otherwise ambiguous = false.
+- Multiple choice (it has 4 choices): test EACH choice on its own: put it into the blank, or test it against the question. passes = one true or false per choice, in order: true if a careful teacher would mark that choice right, even when another choice is better. A choice that is grammatical and true passes even if it is less precise. Do not prefer the hardest or most "vocabulary-like" word. chosen_index = the 0-based position of the best choice (0 = first choice), fill = "", alternatives = [].
+- Typing question (type spell_it, no choices): passes = [], chosen_index = -1, fill = what you would type in the ___ (one word, or as many words as the hint says), in the exact form that fits the sentence, lowercase. The hint ends with the answer's first letter (and, for a phrase, the number of words). alternatives = every other word or form that fits the blank and the hint as well as your fill (try the words inside the hint and their synonyms first), or [] if there is none.
+- ambiguous = true if the question is confusing, or if no choice (or no word) makes a grammatical, sensible sentence; otherwise false.
 - reason: one short sentence on why you chose your answer, or what the problem is.
 
 Return {{"results": [...]}} with exactly one result for every qid, using each qid exactly as given.

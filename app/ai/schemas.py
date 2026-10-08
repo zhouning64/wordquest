@@ -24,6 +24,10 @@ def _str_list() -> dict:
     return {"type": "array", "items": {"type": "string"}}
 
 
+def _bool_list() -> dict:
+    return {"type": "array", "items": {"type": "boolean"}}
+
+
 def _obj(properties: dict) -> dict:
     return {
         "type": "object",
@@ -80,8 +84,10 @@ ANSWER_CHECK_SCHEMA: dict = _obj(
             "items": _obj(
                 {
                     "qid": _str(),
+                    "passes": _bool_list(),  # choice questions: one verdict per choice, in order; spell_it: []
                     "chosen_index": {"type": "integer", "enum": list(_INDEX_ENUM)},
                     "fill": _str(),
+                    "alternatives": _str_list(),  # spell_it: other words that fit the blank and hint; else []
                     "ambiguous": {"type": "boolean"},
                     "reason": _str(),
                 }
@@ -103,11 +109,16 @@ class RawQuestion(BaseModel):
 
 
 class CheckResult(BaseModel):
-    """One blind-check answer for the question with the given qid."""
+    """One blind-check answer for the question with the given qid.
+
+    passes: for a choice question, whether a careful teacher would mark each choice right (in choice order);
+    alternatives: for spell_it, every other word or form the checker found that fits the blank and the hint."""
 
     qid: str
+    passes: list[bool]
     chosen_index: int
     fill: str
+    alternatives: list[str]
     ambiguous: bool
     reason: str
 

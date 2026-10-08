@@ -45,7 +45,8 @@ class FakeLLM:
 
     script maps a schema name (e.g. "learn_card") to the responses for successive calls with that name:
     a dict is returned as LLMResult.data, an exception (instance or class) is raised, and a callable is
-    called with (system, user) and must return the dict. Every call is recorded in .calls.
+    called with (system, user) and must return the dict. Every call is recorded in .calls; like the real client,
+    a call's reasoning_effort is recorded only when one is given.
     """
 
     model = "fake-llm"
@@ -61,8 +62,13 @@ class FakeLLM:
     def calls_for(self, name: str) -> list[dict]:
         return [c for c in self.calls if c["name"] == name]
 
-    async def chat_json(self, *, name: str, schema: dict, system: str, user: str) -> LLMResult:
-        self.calls.append({"name": name, "system": system, "user": user})
+    async def chat_json(
+        self, *, name: str, schema: dict, system: str, user: str, reasoning_effort: str | None = None
+    ) -> LLMResult:
+        call = {"name": name, "system": system, "user": user}
+        if reasoning_effort is not None:
+            call["reasoning_effort"] = reasoning_effort
+        self.calls.append(call)
         queue = self.script.get(name)
         if not queue:
             raise AssertionError(f"FakeLLM: no scripted response left for schema {name!r}")

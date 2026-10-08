@@ -51,7 +51,9 @@ class LLMResult:
 
 
 class LLMClient(Protocol):
-    async def chat_json(self, *, name: str, schema: dict, system: str, user: str) -> LLMResult:
+    async def chat_json(
+        self, *, name: str, schema: dict, system: str, user: str, reasoning_effort: str | None = None
+    ) -> LLMResult:
         ...
 
 
@@ -133,8 +135,11 @@ class CerebrasClient:
         self._on_request = on_request
         self._client = httpx.AsyncClient(timeout=timeout_s, transport=transport)
 
-    async def chat_json(self, *, name: str, schema: dict, system: str, user: str) -> LLMResult:
-        body = {
+    async def chat_json(
+        self, *, name: str, schema: dict, system: str, user: str, reasoning_effort: str | None = None
+    ) -> LLMResult:
+        """reasoning_effort ("low" / "medium" / "high") is sent only when given; otherwise the model default."""
+        body: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
@@ -146,6 +151,8 @@ class CerebrasClient:
                 "json_schema": {"name": name, "strict": True, "schema": schema},
             },
         }
+        if reasoning_effort is not None:
+            body["reasoning_effort"] = reasoning_effort
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
         attempts = len(RETRY_DELAYS_S) + 1
         last_error = ""

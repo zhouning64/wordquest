@@ -43,6 +43,9 @@ MIN_POOL = 6
 MIN_TIER1 = 2
 MIN_TIER2 = 1
 
+# The blind check tests every choice, so it gets more thinking time; the card and batch calls keep the default.
+CHECK_REASONING_EFFORT = "high"
+
 
 def _ordered_mix(counts: dict[str, int]) -> dict[str, int]:
     """Keys in QTYPES order, zero/negative counts removed."""
@@ -129,13 +132,6 @@ def topup_mix(pool: list[Question], card: LearnCard, n: int) -> dict[str, int]:
     return _ordered_mix(picks)
 
 
-def _check_matches(q: RawQuestion, r: CheckResult) -> bool:
-    if q.type == "spell_it":
-        fill = normalize_answer(r.fill)
-        return bool(fill) and fill in {normalize_answer(a) for a in q.accepted_answers}
-    return r.chosen_index == q.answer_index
-
-
 def _accepted(q: RawQuestion) -> list[str]:
     out: list[str] = []
     for a in q.accepted_answers:
@@ -143,6 +139,35 @@ def _accepted(q: RawQuestion) -> list[str]:
         if n and n not in out:
             out.append(n)
     return out
+
+
+def _check_problem(q: RawQuestion, r: CheckResult) -> str:
+    """Why the blind check does not verify q ("" when it does). A choice question needs exactly one passing
+    choice, the key, chosen by the checker; spell_it needs an accepted fill and no other word that fits."""
+    if q.type == "spell_it":
+        accepted = _accepted(q)
+        if normalize_answer(r.fill) not in accepted:
+            return "check: answer mismatch"
+        others: list[str] = []
+        for alt in r.alternatives:
+            n = normalize_answer(alt)
+            if n and n not in accepted and n not in others:
+                others.append(n)
+        if others:
+            return f"check: alternatives fit ({', '.join(others)})"
+    else:
+        if len(r.passes) != len(q.choices):
+            return f"check: {len(r.passes)} passes for {len(q.choices)} choices"
+        passing = [i for i, ok in enumerate(r.passes) if ok]
+        if len(passing) > 1:
+            return f"check: {len(passing)} choices pass"
+        if not passing:
+            return "check: no choice passes"
+        if passing[0] != q.answer_index:
+            return "check: the passing choice is not the key"
+        if r.chosen_index != q.answer_index:
+            return "check: answer mismatch"
+    return "check: ambiguous" if r.ambiguous else ""
 
 
 class ContentGenerator:
@@ -233,7 +258,11 @@ class ContentGenerator:
         ]
         system, user = check_prompt(items)
         result = await self.llm.chat_json(
-            name=ANSWER_CHECK, schema=ANSWER_CHECK_SCHEMA, system=system, user=user
+            name=ANSWER_CHECK,
+            schema=ANSWER_CHECK_SCHEMA,
+            system=system,
+            user=user,
+            reasoning_effort=CHECK_REASONING_EFFORT,
         )
         self._log_usage(word, band, ANSWER_CHECK, result)
         try:
@@ -249,7 +278,7 @@ class ContentGenerator:
         for r in results:
             by_qid.setdefault(r.qid, []).append(r)
 
-        # 4) keep only questions the blind checker answered exactly once, unambiguously, correctly
+        # 4) keep only questions the blind checker answered exactly once, with the key as the only right answer
         now = clock.utc_now_iso()  # through the module, so tests can freeze time
         verified: list[Question] = []
         for qid, q in candidates.items():
@@ -258,12 +287,8 @@ class ContentGenerator:
                 reason = "check: no result"
             elif len(rs) > 1:
                 reason = "check: duplicate result"
-            elif rs[0].ambiguous:
-                reason = "check: ambiguous"
-            elif not _check_matches(q, rs[0]):
-                reason = "check: answer mismatch"
             else:
-                reason = ""
+                reason = _check_problem(q, rs[0])
             if reason:
                 self._reject(
                     word,

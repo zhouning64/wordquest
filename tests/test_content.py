@@ -118,7 +118,7 @@ def rq(qtype: str, **over: object) -> dict:
         },
         "antonym": {
             "prompt": "Which word means the opposite of frugal?",
-            "choices": ["thrifty", "quiet", "wasteful", "polite"],
+            "choices": ["sleepy", "quiet", "wasteful", "polite"],
             "answer_index": 2,
         },
         "spell_it": {
@@ -139,8 +139,13 @@ def rq(qtype: str, **over: object) -> dict:
     return d
 
 
-def ok(qid: str, chosen_index: int = -1, fill: str = "") -> dict:
-    return {"qid": qid, "chosen_index": chosen_index, "fill": fill, "ambiguous": False, "reason": "clear"}
+def ok(qid: str, chosen_index: int = -1, fill: str = "", *, passes: list[bool] | None = None,
+       alternatives: list[str] | None = None, ambiguous: bool = False) -> dict:
+    """A check result. By default only choice chosen_index passes (spell_it: passes = [] and no alternatives)."""
+    if passes is None:
+        passes = [] if chosen_index < 0 else [i == chosen_index for i in range(4)]
+    return {"qid": qid, "passes": passes, "chosen_index": chosen_index, "fill": fill,
+            "alternatives": list(alternatives or []), "ambiguous": ambiguous, "reason": "clear"}
 
 
 _ids = itertools.count(1)
@@ -335,7 +340,7 @@ async def test_checker_mismatch_ambiguous_missing_duplicate_are_dropped(logs):
     card = make_card()
     batch = {
         "questions": [
-            rq("meaning"),  # q1: checker picks a different choice -> mismatch
+            rq("meaning"),  # q1: only the key passes, but the checker chose a different choice -> mismatch
             rq("pick_word"),  # q2: ambiguous -> dropped
             rq("fill_blank"),  # q3: no result -> dropped
             rq("usage"),  # q4: two results -> dropped
@@ -345,8 +350,8 @@ async def test_checker_mismatch_ambiguous_missing_duplicate_are_dropped(logs):
     }
     check = {
         "results": [
-            ok("q1", 2),
-            {"qid": "q2", "chosen_index": 0, "fill": "", "ambiguous": True, "reason": "two fit"},
+            ok("q1", 2, passes=[True, False, False, False]),
+            ok("q2", 0, ambiguous=True),
             ok("q4", 2),
             ok("q4", 2),
             ok("q5", 3),
@@ -368,6 +373,84 @@ async def test_checker_mismatch_ambiguous_missing_duplicate_are_dropped(logs):
         "q6": "check: answer mismatch",
     }
     assert rej[0]["raw"]["question"]["type"] == "meaning"
+
+
+async def run_check(logs, question: dict, result: dict) -> tuple[list[Question], list[dict]]:
+    """One question through make_questions with the given check result: (kept questions, rejection lines)."""
+    llm = FakeLLM({QUESTION_BATCH: [{"questions": [question]}], ANSWER_CHECK: [{"results": [result]}]})
+    qs = await gen(llm, logs).make_questions(WORD, BAND, make_card(), {question["type"]: 1}, [], 1)
+    return qs, read_jsonl(logs[2])
+
+
+@pytest.mark.parametrize(
+    "passes, chosen, reason",
+    [
+        ([True, False, False, False], 0, None),  # exactly one choice passes, and it is the key
+        ([True, False, True, False], 0, "check: 2 choices pass"),  # a second right answer
+        ([True, True, True, True], 0, "check: 4 choices pass"),
+        ([False, False, True, False], 2, "check: the passing choice is not the key"),
+        ([False, False, True, False], 0, "check: the passing choice is not the key"),
+        ([False, False, False, False], 0, "check: no choice passes"),
+        ([True, False, False], 0, "check: 3 passes for 4 choices"),
+        ([True, False, False, False, False], 0, "check: 5 passes for 4 choices"),
+        ([], 0, "check: 0 passes for 4 choices"),
+        ([True, False, False, False], 1, "check: answer mismatch"),
+    ],
+)
+async def test_choice_question_is_kept_only_when_exactly_the_key_passes(logs, passes, chosen, reason):
+    question = rq("meaning")  # the key is choice 0
+    result = ok("q1", chosen, passes=passes)
+    qs, rej = await run_check(logs, question, result)
+    if reason is None:
+        assert [q.type for q in qs] == ["meaning"] and rej == []
+        return
+    assert qs == []
+    assert [(r["kind"], r["errors"]) for r in rej] == [("question_check", [reason])]
+    assert rej[0]["raw"]["results"] == [result]
+
+
+async def test_ambiguous_still_drops_a_choice_question_whose_key_alone_passes(logs):
+    qs, rej = await run_check(logs, rq("synonym"), ok("q1", 1, ambiguous=True))
+    assert qs == [] and rej[0]["errors"] == ["check: ambiguous"]
+
+
+@pytest.mark.parametrize(
+    "accepted, alternatives, reason",
+    [
+        (["frugal"], [], None),
+        (["frugal"], ["frugal", " Frugal ", ""], None),  # accepted answers (and blanks) are not alternatives
+        (["frugal", "frugally"], ["FRUGALLY"], None),
+        (["frugal"], ["thrifty"], "check: alternatives fit (thrifty)"),
+        (["frugal"], ["frugal", "Thrifty", "cheap", "thrifty"], "check: alternatives fit (thrifty, cheap)"),
+        (["frugal"], ["frugally"], "check: alternatives fit (frugally)"),  # a form that is not accepted counts
+    ],
+)
+async def test_spell_it_is_dropped_when_another_word_fits_the_blank_and_hint(logs, accepted, alternatives, reason):
+    qs, rej = await run_check(logs, rq("spell_it", accepted_answers=accepted),
+                              ok("q1", fill="frugal", alternatives=alternatives))
+    if reason is None:
+        assert [q.type for q in qs] == ["spell_it"] and rej == []
+    else:
+        assert qs == [] and [r["errors"] for r in rej] == [[reason]]
+
+
+async def test_spell_it_marked_ambiguous_is_dropped(logs):
+    qs, rej = await run_check(logs, rq("spell_it"), ok("q1", fill="frugal", ambiguous=True))
+    assert qs == [] and rej[0]["errors"] == ["check: ambiguous"]
+
+
+async def test_only_the_checker_call_asks_for_high_reasoning_effort(logs):
+    assert content_mod.CHECK_REASONING_EFFORT == "high"
+    llm = FakeLLM({LEARN_CARD: [card_dict()], QUESTION_BATCH: [{"questions": [rq("meaning")]}],
+                   ANSWER_CHECK: [{"results": [ok("q1", 0)]}]})
+    g = gen(llm, logs)
+    card = await g.make_card(WORD, BAND)
+    qs = await g.make_questions(WORD, BAND, card, {"meaning": 1}, [], 1)
+    assert len(qs) == 1
+    assert [c["name"] for c in llm.calls] == [LEARN_CARD, QUESTION_BATCH, ANSWER_CHECK]
+    assert "reasoning_effort" not in llm.calls[0] and "reasoning_effort" not in llm.calls[1]
+    assert llm.calls[2]["reasoning_effort"] == "high"
+    assert [r["call"] for r in read_jsonl(logs[3])] == [LEARN_CARD, QUESTION_BATCH, ANSWER_CHECK]
 
 
 @pytest.mark.parametrize("fill", ["frugal", "  FRUGAL ", "Frugal"])

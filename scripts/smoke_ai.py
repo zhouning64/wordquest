@@ -48,8 +48,12 @@ class UsageRecorder:
         self.inner = inner
         self.calls: list[dict] = []
 
-    async def chat_json(self, *, name: str, schema: dict, system: str, user: str) -> LLMResult:
-        result = await self.inner.chat_json(name=name, schema=schema, system=system, user=user)
+    async def chat_json(
+        self, *, name: str, schema: dict, system: str, user: str, reasoning_effort: str | None = None
+    ) -> LLMResult:
+        result = await self.inner.chat_json(
+            name=name, schema=schema, system=system, user=user, reasoning_effort=reasoning_effort
+        )
         self.calls.append({"name": name, "usage": dict(result.usage or {}), "finish_reason": result.finish_reason})
         return result
 

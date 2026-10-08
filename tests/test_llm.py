@@ -130,6 +130,22 @@ async def test_request_shape_and_auth_header():
         "type": "json_schema",
         "json_schema": {"name": "learn_card", "strict": True, "schema": SCHEMA},
     }
+    assert "reasoning_effort" not in body  # the model default unless a call asks for more
+
+
+async def test_reasoning_effort_is_sent_only_when_given():
+    handler = Recorder(ok_response({"answer": "x"}), ok_response({"answer": "y"}), ok_response({"answer": "z"}))
+    client = make_client(handler)
+    try:
+        await client.chat_json(name="answer_check", schema=SCHEMA, system="s", user="u", reasoning_effort="high")
+        await client.chat_json(name="answer_check", schema=SCHEMA, system="s", user="u", reasoning_effort=None)
+        await client.chat_json(name="answer_check", schema=SCHEMA, system="s", user="u")
+    finally:
+        await client.aclose()
+    bodies = [json.loads(req.content) for req in handler.requests]
+    assert bodies[0]["reasoning_effort"] == "high"
+    assert "reasoning_effort" not in bodies[1] and "reasoning_effort" not in bodies[2]
+    assert {k: v for k, v in bodies[0].items() if k != "reasoning_effort"} == bodies[1] == bodies[2]
 
 
 async def test_base_url_trailing_slash_is_tolerated():

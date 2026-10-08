@@ -146,6 +146,14 @@ async def test_usage_recorder_passes_results_through_and_records_usage():
     assert recorder.calls == [{"name": "learn_card", "usage": {"completion_tokens": 10}, "finish_reason": "stop"}]
 
 
+async def test_usage_recorder_forwards_reasoning_effort():
+    smoke = load_smoke()
+    inner = FakeLLM({"answer_check": [{"results": []}]})
+    await smoke.UsageRecorder(inner).chat_json(name="answer_check", schema={}, system="s", user="u",
+                                               reasoning_effort="high")
+    assert inner.calls[0]["reasoning_effort"] == "high"
+
+
 def test_summarize_usage_totals_calls_and_fills_missing_totals():
     smoke = load_smoke()
     calls = [

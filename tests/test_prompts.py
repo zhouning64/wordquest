@@ -47,6 +47,33 @@ def test_band_guide_covers_every_band_with_limits_and_settings():
     assert "no battles, monsters or weapons" in BAND_GUIDE["6-8"] and "safe lab habits only" in BAND_GUIDE["6-8"]
     assert 'never "kid"' in BAND_GUIDE["9-12"] and "invented person" in BAND_GUIDE["9-12"]
     assert 'never "kid"' not in BAND_GUIDE["3-5"]
+    for phrase in ("history, literature, science, jobs, school debate club",
+                   "no elections, voting, protests or political causes", "never with a setting phrase",
+                   "only if every fact in the sentence is true", "no death tolls or disasters"):
+        assert phrase in BAND_GUIDE["9-12"], phrase
+    assert "current events" not in BAND_GUIDE["9-12"]
+    assert "setting phrase" not in BAND_GUIDE["3-5"] + BAND_GUIDE["6-8"]
+
+
+# Concrete content the model copied from earlier prompts (scenes, sample words, sample sentences).
+REMOVED = (
+    "brave cake", "brave outfit", '"pride"', '"instead"', '"practical"', "In the novel,", "During the Renaissance,",
+    "Priya covering", "flood", "curious dog", "self-esteem", "curious = strange", "candid photo", "candied",
+    "militate", "tenacious", "ephemeral", "steady", "frugal", "Maya was ___", "benevolent", "giant + -ic",
+    "massive / tiny", "braved", "careful with money", "candidly",
+)
+
+
+@pytest.mark.parametrize("band", ["3-5", "6-8", "9-12"])
+def test_prompts_no_longer_carry_copyable_content_examples(band):
+    card = CARD.model_copy(update={"examples": ["zest one", "zest two", "zest three", "zest four"],
+                                   "senses": [], "synonyms": ["zeal"], "antonyms": [], "word_parts": "",
+                                   "forms": [], "right_use": RightUse(), "wrong_use": WrongUse()})
+    texts = [*learn_card_prompt("zest", band), *question_batch_prompt("zest", band, card, MIX, [])]
+    texts += check_prompt([{"qid": "q1", "type": "meaning", "prompt": "What does zest mean?", "choices": []}])
+    for text in texts:
+        for phrase in REMOVED:
+            assert phrase not in text, phrase
 
 
 @pytest.mark.parametrize("band", ["3-5", "6-8", "9-12"])
@@ -55,13 +82,27 @@ def test_learn_card_prompt_contents(band):
     assert system and user
     assert '"frugal"' in user
     assert BAND_GUIDE[band] in user
-    for phrase in ("irregular", "strove", "1 to 3", "4 to 6", "memory_hook", "word_parts", "never invent",
+    for phrase in ("irregular", "strove", "1 to 3", "4 to 6", "memory_hook", "word_parts",
                    "right_use", "wrong_use", "3 to 6 emoji", "image_scene", "any text, letters, numbers, signs"):
         assert phrase.lower() in user.lower(), phrase
     assert 'stressed on "MAT"' in user and "prag-MAT-ic" not in user and "jy-GAN-tik" not in user
-    for phrase in ("second meaning", "its own sense", "not a label", "real world", "sounds like itself",
+    for phrase in ("second meaning", "not a label", "real world", "sounds like itself",
                    "hidden inside", "every dictionary meaning", "single picture", "whole range", "same part of speech"):
         assert phrase.lower() in user.lower(), phrase
+    # senses and forms (round 3): derived words never get a sense of their own; forms follow the senses
+    for phrase in ("meanings of \"frugal\" itself", "(-ly, -ness, -ity, -ion, -ment, -ance, -ence, -ery)",
+                   "never get a sense or part of speech of their own", "simple inflection of it (-s, -ed, -ing)",
+                   "rare or technical sense", "the main sense without its key idea",
+                   "the inflections and derived words of the senses you give"):
+        assert phrase in user, phrase
+    assert "needs its own sense" not in user
+    # wrong_use, word_parts, memory_hook, comparatives (round 3)
+    for phrase in ("first pick one real word students confuse with", "a look-alike or a near-meaning word",
+                   "the subject is an object, animal or weather", "the action fails", 'this sentence needs "<other word>"',
+                   '"<part> (<meaning>) + <part> (<meaning>) = <combined meaning>"', "Name the real source word",
+                   "never guess a root's meaning from a modern English word", "with certainty, use \"\"",
+                   "use a root only if it is the one in word_parts", 'Use "more/most frugal" only when two or more things'):
+        assert phrase in user, phrase
     assert "Never reuse a sentence" in user
     assert "school-appropriate" in system
     assert "goggles" in system and "bouncing back from mistakes" in system
@@ -72,7 +113,8 @@ def test_learn_card_prompt_contents(band):
 def test_learn_card_prompt_word_parts_roots_depend_on_band():
     _, young = learn_card_prompt("gigantic", "3-5")
     _, older = learn_card_prompt("gigantic", "9-12")
-    assert "giant + -ic" in young and "giant + -ic" in older
+    form = '"<part> (<meaning>) + <part> (<meaning>) = <combined meaning>"'
+    assert form in young and form in older
     assert "Latin, Greek or French" not in young
     assert "Latin, Greek or French" in older
 
@@ -109,14 +151,22 @@ def test_question_batch_prompt_contents():
     for sentence in CARD.examples + [s.example for s in CARD.senses] + [CARD.right_use.sentence, CARD.wrong_use.sentence]:
         assert f"- {sentence}" in user
     # the rules
-    for rule in ("exactly one defensible answer", "Ask only about the card's senses", "(means: careful with money)",
+    for rule in ("exactly one defensible answer", "Ask only about the card's senses", "(means: <short meaning>)",
                  "copied exactly from the card's synonyms", "copied exactly from the card's antonyms",
                  "every choice contains the word", "exactly one ___", "160 characters", "plausible",
                  "never write that hint yourself", "fit this word and no other",
                  "synonym with the same first letter would also fit", "at most 6 plain words",
-                 "Put each wrong choice into the blank", "never refer to a letter or position",
+                 "never refer to a letter or position",
                  'Say "kid" only for band 3-5', "never reuse a Learn-card situation", "no two questions",
                  "Never copy the examples in these instructions"):
+        assert rule in system, rule
+    # round 3: fill_blank, scenario stems, comparatives
+    for rule in ("Choose the three wrong choices first", "states the meaning in other plain words",
+                 "makes the sentence false or silly", "Naming an activity is not a clue",
+                 "a feeling, manner or action that could also describe the person or scene",
+                 "a noun goes in a noun slot", "a verb keeps its preposition",
+                 '"Which of these would you call <word>?" only for a noun or adjective',
+                 "ask which sentence or situation shows it", 'Use "more/most <word>" only when two or more things'):
         assert rule in system, rule
     for qtype in MIX:
         assert f"- {qtype}:" in system
@@ -150,11 +200,15 @@ def test_check_prompt_shows_only_what_the_learner_sees():
     lines = user.splitlines()[1:]
     assert [json.loads(line) for line in lines] == items
     assert "independently" in system
-    assert "ambiguous" in system and "chosen_index" in system and "fill" in system
+    for field in ("passes", "chosen_index", "fill", "alternatives", "ambiguous", "reason"):
+        assert field in system, field
     assert "-1" in system
-    for rule in ("put EACH choice into the blank", "teacher would mark it right", "hardest",
-                 "no choice is right, or no choice makes a grammatical, sensible sentence",
-                 "the answer's first letter (and, for a phrase, the number of words)", "words inside the hint"):
+    for rule in ("test EACH choice on its own", "one true or false per choice, in order",
+                 "a careful teacher would mark that choice right, even when another choice is better",
+                 "grammatical and true passes even if it is less precise", 'hardest or most "vocabulary-like"',
+                 "passes = []", "alternatives = []", "every other word or form that fits the blank and the hint",
+                 "the answer's first letter (and, for a phrase, the number of words)",
+                 "try the words inside the hint and their synonyms first"):
         assert rule in system, rule
     for forbidden in ("answer_index", "accepted_answers", "explanation"):
         assert forbidden not in system

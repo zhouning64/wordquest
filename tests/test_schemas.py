@@ -85,9 +85,17 @@ def test_question_batch_schema_shape():
 def test_answer_check_schema_shape():
     assert list(ANSWER_CHECK_SCHEMA["properties"]) == ["results"]
     item = ANSWER_CHECK_SCHEMA["properties"]["results"]["items"]
+    assert list(item["properties"]) == ["qid", "passes", "chosen_index", "fill", "alternatives", "ambiguous", "reason"]
     assert set(item["properties"]) == set(CheckResult.model_fields)
+    assert item["properties"]["passes"] == {"type": "array", "items": {"type": "boolean"}}
+    assert item["properties"]["alternatives"] == {"type": "array", "items": {"type": "string"}}
     assert item["properties"]["ambiguous"] == {"type": "boolean"}
     assert item["properties"]["chosen_index"]["enum"] == [-1, 0, 1, 2, 3]
+
+
+@pytest.mark.parametrize("schema", [LEARN_CARD_SCHEMA, QUESTION_BATCH_SCHEMA, ANSWER_CHECK_SCHEMA])
+def test_schema_stays_under_the_strict_mode_size_limit(schema):
+    assert len(json.dumps(schema)) < 5000
 
 
 CARD_DATA = {
@@ -166,19 +174,31 @@ def test_parse_questions_invalid(bad):
         parse_questions(bad)
 
 
+CHECK = {"qid": "q1", "passes": [False, False, True, False], "chosen_index": 2, "fill": "", "alternatives": [],
+         "ambiguous": False, "reason": "clear"}
+
+
 def test_parse_check_valid():
-    results = parse_check(
-        {"results": [{"qid": "q1", "chosen_index": 2, "fill": "", "ambiguous": False, "reason": "clear"}]}
-    )
-    assert results == [CheckResult(qid="q1", chosen_index=2, fill="", ambiguous=False, reason="clear")]
+    spell = {**CHECK, "qid": "q2", "passes": [], "chosen_index": -1, "fill": "huge", "alternatives": ["giant"]}
+    results = parse_check({"results": [CHECK, spell]})
+    assert results == [
+        CheckResult(qid="q1", passes=[False, False, True, False], chosen_index=2, fill="", alternatives=[],
+                    ambiguous=False, reason="clear"),
+        CheckResult(qid="q2", passes=[], chosen_index=-1, fill="huge", alternatives=["giant"], ambiguous=False,
+                    reason="clear"),
+    ]
 
 
 @pytest.mark.parametrize(
     "bad",
     [
         {"result": []},
-        {"results": [{"qid": "q1", "chosen_index": 0, "fill": "", "reason": "x"}]},
-        {"results": [{"qid": "q1", "chosen_index": 0, "fill": "", "ambiguous": "maybe", "reason": "x"}]},
+        {"results": [{k: v for k, v in CHECK.items() if k != "ambiguous"}]},
+        {"results": [{**CHECK, "ambiguous": "maybe"}]},
+        {"results": [{k: v for k, v in CHECK.items() if k != "passes"}]},  # the old result shape
+        {"results": [{k: v for k, v in CHECK.items() if k != "alternatives"}]},
+        {"results": [{**CHECK, "passes": "yes"}]},
+        {"results": [{**CHECK, "alternatives": [1, 2]}]},
         None,
     ],
 )

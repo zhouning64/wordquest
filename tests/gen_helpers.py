@@ -97,14 +97,17 @@ def batch(items: Sequence[dict]) -> dict:
 
 def check_all_match(card: LearnCard, items: Sequence[dict], *, word: str = WORD, band: str = BAND,
                     existing_prompts: Sequence[str] = ()) -> dict:
-    """An answer_check response that agrees with every question (qids q1..qn over the kept questions)."""
+    """An answer_check response that agrees with every question: only the key passes, no spell_it alternatives
+    (qids q1..qn over the kept questions)."""
     raws = [RawQuestion.model_validate(item) for item in items]
     kept, drops = validate_questions(word, band, card, raws, existing_prompts=list(existing_prompts))
     assert not drops, f"fixture questions must pass validation: {drops}"
     return {"results": [
-        {"qid": f"q{i}", "chosen_index": raw.answer_index,
+        {"qid": f"q{i}",
+         "passes": [] if raw.type == "spell_it" else [j == raw.answer_index for j in range(len(raw.choices))],
+         "chosen_index": raw.answer_index,
          "fill": raw.accepted_answers[0] if raw.type == "spell_it" else "",
-         "ambiguous": False, "reason": "matches"}
+         "alternatives": [], "ambiguous": False, "reason": "matches"}
         for i, raw in enumerate(kept, start=1)
     ]}
 
