@@ -265,6 +265,99 @@ async def test_pool_shortfall_consumes_an_attempt_and_keeps_verified_questions(r
     assert repo.job_counts() == {"pending": 0, "running": 0, "done": 3, "failed": 0}
 
 
+def trickle_script(card, batches):
+    """A Learn card, then one questions attempt per entry of `batches` (lists of BATCH_A items).
+
+    Each attempt's questions all verify, so the pool grows by len(batch) per attempt."""
+    script = {LEARN_CARD: [card.model_dump()], QUESTION_BATCH: [], ANSWER_CHECK: []}
+    seen: list[str] = []
+    for items in batches:
+        script[QUESTION_BATCH].append(batch(items))
+        script[ANSWER_CHECK].append(check_all_match(card, items, existing_prompts=list(seen)))
+        seen.extend(item["prompt"] for item in items)
+    return script
+
+
+async def test_pool_shortfall_gets_five_attempts_with_growing_backoff(repo, clk, tmp_path):
+    card = make_card()
+    llm = FakeLLM(trickle_script(card, [[item] for item in BATCH_A[:5]]))  # one verified question per attempt
+    worker = make_worker(repo, clk, tmp_path, llm=llm)
+    ensure_generation(repo, BAND, WORD)
+    assert await worker.run_one()  # learn
+
+    for attempt, wait in enumerate((5, 30, 60, 120), start=1):
+        assert await worker.run_one()  # questions attempt `attempt`: still below the minimum
+        job = repo.get_job(QUESTIONS_KEY)
+        assert (job.status, job.attempts) == ("pending", attempt)
+        assert job.not_before == clock.iso(clk.now + timedelta(seconds=wait))
+        assert job.last_error.startswith("PoolShortfall")
+        assert len(repo.get_pool(BAND, WORD)) == attempt  # every verified question is kept
+        assert repo.get_content(BAND, WORD).status == "pending"
+        clk.advance(wait - 1)
+        assert not await worker.run_one()  # one second early: still backing off
+        clk.advance(1)
+
+    assert await worker.run_one()  # attempt 5 is the last one
+    job = repo.get_job(QUESTIONS_KEY)
+    assert (job.status, job.attempts) == ("failed", 5)
+    assert job.last_error.startswith("PoolShortfall")
+    content = repo.get_content(BAND, WORD)
+    assert (content.status, content.card is not None) == ("failed", True)
+    assert content.error.startswith("PoolShortfall")
+    assert len(repo.get_pool(BAND, WORD)) == 5
+    assert len(llm.calls_for(QUESTION_BATCH)) == 5
+    assert repo.get_job(IMAGE_KEY) is None
+    assert not await worker.run_one()
+
+
+async def test_pool_built_over_five_attempts_is_ready_on_the_last_one(repo, clk, tmp_path):
+    card = make_card()
+    batches = [[item] for item in BATCH_A[:4]] + [BATCH_A[4:]]  # 1 + 1 + 1 + 1 + 2 verified questions
+    llm = FakeLLM(trickle_script(card, batches))
+    worker = make_worker(repo, clk, tmp_path, llm=llm)  # no image provider
+    ensure_generation(repo, BAND, WORD)
+    assert await worker.run_one()  # learn
+
+    for wait in (5, 30, 60, 120):
+        assert await worker.run_one()
+        clk.advance(wait)
+    assert await worker.run_one()  # attempt 5 tops the pool up to the minimum
+
+    content = repo.get_content(BAND, WORD)
+    assert (content.status, content.error) == ("ready", "")
+    pool = repo.get_pool(BAND, WORD)
+    assert [q.prompt for q in pool] == [item["prompt"] for item in BATCH_A]  # nothing from earlier attempts was lost
+    assert repo.get_job(QUESTIONS_KEY).status == "done"
+    last_request = llm.calls_for(QUESTION_BATCH)[-1]["user"]
+    assert all(item["prompt"] in last_request for item in BATCH_A[:4])  # the model is told what it already wrote
+    assert await worker.run_one()  # image job with IMAGE_PROVIDER=none
+    assert repo.job_counts() == {"pending": 0, "running": 0, "done": 3, "failed": 0}
+
+
+async def test_invalid_questions_still_fail_after_three_attempts(repo, clk, tmp_path):
+    bad_batch = {"questions": "not a list"}  # parse_questions raises InvalidOutput
+    llm = FakeLLM({LEARN_CARD: [make_card().model_dump()], QUESTION_BATCH: [bad_batch] * 3})
+    worker = make_worker(repo, clk, tmp_path, llm=llm)
+    ensure_generation(repo, BAND, WORD)
+    assert await worker.run_one()  # learn
+
+    for attempt, wait in enumerate((5, 30), start=1):
+        assert await worker.run_one()
+        job = repo.get_job(QUESTIONS_KEY)
+        assert (job.status, job.attempts) == ("pending", attempt)
+        assert job.not_before == clock.iso(clk.now + timedelta(seconds=wait))
+        assert job.last_error.startswith("InvalidOutput")
+        clk.advance(wait)
+
+    assert await worker.run_one()  # only a pool shortfall earns more than 3 attempts
+    job = repo.get_job(QUESTIONS_KEY)
+    assert (job.status, job.attempts) == ("failed", 3)
+    content = repo.get_content(BAND, WORD)
+    assert (content.status, content.error.startswith("InvalidOutput")) == ("failed", True)
+    assert len(llm.calls_for(QUESTION_BATCH)) == 3
+    assert not await worker.run_one()
+
+
 async def test_topup_fills_the_pool_only_up_to_the_cap(repo, clk, tmp_path):
     card = make_card()
     save_ready_content(repo, n_questions=POOL_CAP - 2)

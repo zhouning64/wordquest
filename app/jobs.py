@@ -23,6 +23,9 @@ from app.storage.base import BlobStore, Repository
 LEASE_S = 900  # longer than a worst-case questions job (about 366 s), so no other loop re-claims a live job
 BACKOFF_S = (5, 30)  # attempt 1 fails → +5 s, attempt 2 fails → +30 s, attempt 3 fails → final
 MAX_ATTEMPTS = len(BACKOFF_S) + 1
+# A pool shortfall keeps the verified questions already obtained, so each retry only asks for the missing tiers
+# and has a fair chance: it gets 5 attempts in total (5 s, 30 s, 60 s, 120 s between them).
+SHORTFALL_BACKOFF_S = (5, 30, 60, 120)
 RATE_LIMIT_DEFAULT_S = 60
 RATE_LIMIT_MAX_S = 3600  # a Retry-After hint is capped at one hour (huge hints would overflow the date maths)
 NO_GENERATOR_DEFER_S = 3600
@@ -45,6 +48,11 @@ class PoolShortfall(Exception):
 def next_utc_midnight(now: datetime) -> datetime:
     start_of_day = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     return start_of_day + timedelta(days=1)
+
+
+def backoff_for(exc: Exception) -> tuple[int, ...]:
+    """Seconds to wait before each retry of a failed attempt; the job gets len(result) + 1 attempts in total."""
+    return SHORTFALL_BACKOFF_S if isinstance(exc, PoolShortfall) else BACKOFF_S
 
 
 def job_mode(content: WordContent | None, job: Job) -> str | None:
@@ -288,8 +296,9 @@ class Worker:
     async def _fail(self, job: Job, exc: Exception) -> None:
         message = redact(f"{type(exc).__name__}: {exc}")[:ERROR_MAX_CHARS]
         attempt = job.attempts + 1
-        if attempt < MAX_ATTEMPTS:
-            retry_at = clock.add_seconds_iso(self.now_fn(), BACKOFF_S[attempt - 1])
+        backoff = backoff_for(exc)
+        if attempt <= len(backoff):  # attempts 1..len(backoff) are followed by a retry; the next one is final
+            retry_at = clock.add_seconds_iso(self.now_fn(), backoff[attempt - 1])
             await self._db(self.repo.fail_job, job.key, job.lease_token, message, retry_at)
             return
         if not await self._db(self.repo.fail_job, job.key, job.lease_token, message, None):
