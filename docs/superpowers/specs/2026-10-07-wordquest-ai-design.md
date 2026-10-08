@@ -288,8 +288,8 @@ A **question** is dropped (others in the batch survive) if any of these fail:
 - Q5 no reuse of Learn content: after case-folding, stripping punctuation, and filling `___` with the word and each form, neither the prompt nor any sentence-valued choice equals a Learn-card sentence (`examples`, `senses[].example`, `right_use`, `wrong_use`).
 - Q6 sentence length ≤ band limit + 5 words; explanation ≤ 160 chars.
 - Q7 no blocklisted term.
-- Q8 (top-ups) the normalized prompt does not equal an existing pool prompt.
-- Q9 the explanation does not refer to a choice by letter or position ("the first sentence", "option B", "choice 2", "(A)"); choices are shuffled. Legacy exempt.
+- Q8 (top-ups) the normalized prompt does not equal an existing pool prompt (the letter hint is ignored on both sides).
+- Q9 the explanation does not refer to a choice by letter or position ("the first sentence", "the last one", "option B", "Answer: B", "B is correct", "(A)"); choices are shuffled. Legacy exempt.
 - Q10 the word is spelled correctly: no prompt or choice writes the word (or a form) with a hyphen added or dropped, a space dropped, or capitals inside it (`ephem-eral`, `ephemerAl`, `selfesteem`); a sentence-start capital or ALL CAPS is fine. Legacy exempt.
 
 **Blocklist matching** is whole-token after case-folding, including the §7.7 inflections of each entry; a rejection's error text names the blocked term.

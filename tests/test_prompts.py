@@ -58,6 +58,7 @@ def test_learn_card_prompt_contents(band):
     for phrase in ("irregular", "strove", "1 to 3", "4 to 6", "memory_hook", "word_parts", "never invent",
                    "right_use", "wrong_use", "3 to 6 emoji", "image_scene", "any text, letters, numbers, signs"):
         assert phrase.lower() in user.lower(), phrase
+    assert 'stressed on "MAT"' in user and "prag-MAT-ic" not in user and "jy-GAN-tik" not in user
     for phrase in ("second meaning", "its own sense", "not a label", "real world", "sounds like itself",
                    "hidden inside", "every dictionary meaning", "single picture", "whole range", "same part of speech"):
         assert phrase.lower() in user.lower(), phrase
@@ -111,7 +112,8 @@ def test_question_batch_prompt_contents():
     for rule in ("exactly one defensible answer", "Ask only about the card's senses", "(means: careful with money)",
                  "copied exactly from the card's synonyms", "copied exactly from the card's antonyms",
                  "every choice contains the word", "exactly one ___", "160 characters", "plausible",
-                 "The app adds the first-letter hint itself", "at most 6 plain words",
+                 "never write that hint yourself", "fit this word and no other",
+                 "synonym with the same first letter would also fit", "at most 6 plain words",
                  "Put each wrong choice into the blank", "never refer to a letter or position",
                  'Say "kid" only for band 3-5', "never reuse a Learn-card situation", "no two questions",
                  "Never copy the examples in these instructions"):
@@ -151,7 +153,8 @@ def test_check_prompt_shows_only_what_the_learner_sees():
     assert "ambiguous" in system and "chosen_index" in system and "fill" in system
     assert "-1" in system
     for rule in ("put EACH choice into the blank", "teacher would mark it right", "hardest",
-                 "grammatical, sensible sentence", "first letter of the answer", "words inside the hint"):
+                 "no choice is right, or no choice makes a grammatical, sensible sentence",
+                 "the answer's first letter (and, for a phrase, the number of words)", "words inside the hint"):
         assert rule in system, rule
     for forbidden in ("answer_index", "accepted_answers", "explanation"):
         assert forbidden not in system

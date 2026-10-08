@@ -186,16 +186,23 @@ class Drop:
 
 
 _CUE_AT_END = re.compile(r"\(\s*means\s*:[^()]*[^\s()][^()]*\)\s*\.?\s*$", re.IGNORECASE)
-# The same closing cue split into its meaning and any "starts with ..." hint after it.
+# The same closing cue split into its meaning and any letter hint after it ("starts with f", "it starts with f",
+# "the word begins with f", "first letter: f", "first letter is f").
 _CUE_PARTS = re.compile(
-    r"\(\s*means\s*:(?P<meaning>[^()]*?)(?:[;,.:\-–—]\s*(?:starts|begins)\s+with\b[^()]*)?\)\s*\.?\s*$",
+    r"\(\s*means\s*:(?P<meaning>[^()]*?)"
+    r"(?:[;,.:\-–—]\s*"
+    r"(?:(?:(?:it|the\s+(?:word|answer))\s+)?(?:starts|begins)\s+with|(?:the\s+)?first\s+letter)\b[^()]*)?"
+    r"\)\s*\.?\s*$",
     re.IGNORECASE,
 )
-# An explanation that points at a choice by position: "the first sentence", "option B", "choice 2", "(A)", "A)".
+# An explanation that points at a choice by position: "the first sentence", "the last one", "option B",
+# "Answer: B", "choice 2", "B is correct", "(A)", "(a)", "A)".
 _POSITION_REF = re.compile(
-    r"(?i:\bthe\s+(?:first|second|third|fourth|last)\s+(?:sentence|choice|option|answer)\b)"
-    r"|(?i:\b(?:option|choice|answer|sentence))\s+(?:[A-D]|[1-4])\b"
-    r"|\(?\b[A-D]\)"
+    r"(?i:\bthe\s+(?:first|second|third|fourth|last)\s+"
+    r"(?:sentence|choice|option|answer|one\b(?!\s+(?:to|who|that)\b)))"
+    r"|(?i:\b(?:option|choice|answer|sentence))(?:\s*:\s*|\s+)(?:[A-D]|[1-4])\b"
+    r"|\b[A-D]\s+is\s+(?i:correct|right|the\s+(?:best\s+)?answer)\b"
+    r"|\(?\b[A-D]\)|(?i:\([a-d]\))"
 )
 # inflect.tokenize's token pattern with the case kept (typographic apostrophes and hyphens included).
 _RAW_TOKEN = re.compile(r"[^\W_]+(?:['’‘ʼ\-‐‑][^\W_]+)*")
@@ -217,7 +224,7 @@ def _add_letter_hint(prompt: str, answer: str) -> str:
     m = _CUE_PARTS.search(prompt)
     if m is None:
         return prompt
-    meaning = m.group("meaning").strip()
+    meaning = m.group("meaning").strip().rstrip(".").rstrip()
     words = len(answer.split())
     hint = f'starts with "{answer[0]}"' + (f", {words} words" if words > 1 else "")
     cue = f"(means: {meaning}; {hint})" if meaning else "(means: )"
@@ -401,13 +408,13 @@ def validate_questions(
         learn={_norm(s) for s in learn_sentences if s.strip()},
         legacy=legacy,
     )
-    seen_prompts = {_norm(p) for p in existing_prompts if p.strip()}
+    seen_prompts = {_norm(_without_hint(p)) for p in existing_prompts if p.strip()}  # old prompts may lack a hint
     kept: list[RawQuestion] = []
     drops: list[Drop] = []
     for index, original in enumerate(raw):
         q = _tidy(original, legacy=legacy)
         reason = _problem(q, ctx)
-        key = _norm(q.prompt)
+        key = _norm(_without_hint(q.prompt))
         if reason is None and key in seen_prompts:
             reason = "Q8: repeats an existing question prompt"
         if reason is not None:

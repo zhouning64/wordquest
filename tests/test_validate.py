@@ -548,6 +548,15 @@ def test_q8_applies_to_legacy_too():
     assert only(GOOD["meaning"], existing_prompts=['What does "frugal" mean?'], legacy=True).startswith("Q8")
 
 
+def test_q8_ignores_the_letter_hint_on_both_sides():
+    old_unhinted = GOOD["spell_it"].prompt  # stored before the app added hints
+    assert only(GOOD["spell_it"], existing_prompts=[old_unhinted]).startswith("Q8")
+    hinted = 'Mom stays ___ by using coupons at the store. (means: careful with money; starts with "f")'
+    assert only(GOOD["spell_it"], existing_prompts=[hinted]).startswith("Q8")
+    other_cue = "Mom stays ___ by using coupons at the store. (means: spends little)"
+    assert only(GOOD["spell_it"], existing_prompts=[other_cue]) is None
+
+
 # --- spell_it first-letter hint --------------------------------------------------------------------
 
 def kept_prompt(q: RawQuestion, word: str = WORD, **kw) -> str:
@@ -578,6 +587,13 @@ def test_hint_uses_the_accepted_form_and_counts_the_words_of_a_phrase():
         "(means: careful with money; starts with F)",
         "(means: careful with money, starts with the letter f).",
         '(Means: careful with money; starts with "g", 2 words)',
+        "(means: careful with money.)",
+        "(means: careful with money .)",
+        "(means: careful with money; it starts with F)",
+        "(means: careful with money, the word starts with f)",
+        "(means: careful with money; begins with f)",
+        "(means: careful with money; first letter: f)",
+        "(means: careful with money. First letter is F.)",
     ],
 )
 def test_hint_replaces_a_hint_the_model_wrote(cue):
@@ -613,6 +629,14 @@ def test_hint_leaves_legacy_questions_unchanged():
         "Choice 2 shows careful spending.",
         "(A) shows careful spending.",
         "A) shows careful spending.",
+        "B is correct because Ava saves her money.",
+        "C is right: Ava saves her money.",
+        "D is the answer since Ava saves.",
+        "Answer: B, because Ava saves her money.",
+        "Answer:C fits the clue.",
+        "(a) is right because Ava saves her money.",
+        "The third one shows careful spending.",
+        "The last one is about saving money.",
     ],
 )
 def test_q9_explanation_must_not_name_a_choice_position(explanation):
@@ -627,6 +651,8 @@ def test_q9_explanation_must_not_name_a_choice_position(explanation):
         "This sentence shows careful spending, so frugal fits.",
         "Ava was first to pick the cheaper option, which is frugal.",
         "The best answer is careful with money.",
+        "I'm sure frugal fits, because Ava saves her money.",
+        "Ava was the first one to pack lunch and save money.",
     ],
 )
 def test_q9_allows_ordinary_wording(explanation):
