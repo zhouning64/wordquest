@@ -61,6 +61,7 @@ REMOVED = (
     "Priya covering", "flood", "curious dog", "self-esteem", "curious = strange", "candid photo", "candied",
     "militate", "tenacious", "ephemeral", "steady", "frugal", "Maya was ___", "benevolent", "giant + -ic",
     "massive / tiny", "braved", "careful with money", "candidly",
+    "chemical spill", "spill", "flames",  # fix round 1: the model copied "Priya ___ the chemical spill"
 )
 
 
@@ -97,7 +98,7 @@ def test_learn_card_prompt_contents(band):
         assert phrase in user, phrase
     assert "needs its own sense" not in user
     # wrong_use, word_parts, memory_hook, comparatives (round 3)
-    for phrase in ("first pick one real word students confuse with", "a look-alike or a near-meaning word",
+    for phrase in ("a look-alike or a near-meaning word",
                    "the subject is an object, animal or weather", "the action fails", 'this sentence needs "<other word>"',
                    '"<part> (<meaning>) + <part> (<meaning>) = <combined meaning>"', "Name the real source word",
                    "never guess a root's meaning from a modern English word", "with certainty, use \"\"",
@@ -106,8 +107,26 @@ def test_learn_card_prompt_contents(band):
     assert "Never reuse a sentence" in user
     assert "school-appropriate" in system
     assert "goggles" in system and "bouncing back from mistakes" in system
+    assert "no unsafe handling of materials or heat" in system
     assert "Never copy the examples in these instructions" in system
     assert "JSON" in system
+
+
+@pytest.mark.parametrize("band", ["3-5", "6-8", "9-12"])
+def test_learn_card_wrong_use_misuses_the_word_itself(band):
+    # Fix round 1: "write a sentence where that other word is right" made the model write a correct sentence
+    # with the OTHER word, so 11 of 17 live cards failed L4. The sentence must contain the word itself.
+    _, user = learn_card_prompt("frugal", band)
+    line = next(l for l in user.splitlines() if l.startswith("- wrong_use.sentence:"))
+    for phrase in ('a sentence that contains "frugal" itself (or one of its forms)',
+                   'put "frugal" in the spot where that other word belongs',
+                   'the sentence would be correct if "frugal" were replaced by the other word',
+                   "The other word does not appear in the sentence",
+                   "X used where Y belongs", "names the other word", 'this sentence needs "<other word>"',
+                   "every dictionary meaning", "the subject is an object, animal or weather", "the action fails"):
+        assert phrase in line, phrase
+    assert "where that other word is right" not in user
+    assert "first pick one real word" not in user
 
 
 def test_learn_card_prompt_word_parts_roots_depend_on_band():

@@ -45,7 +45,7 @@ _SAFETY = """Safety and tone (always):
 - Everything is for children: kind, encouraging, and school-appropriate.
 - No violence, weapons, injuries, death, crime, scary or gross content, romance or dating, alcohol, drugs, gambling, or bad words.
 - No real living people, celebrities, brand names, or products; no politics or religion; no stereotypes about any group. History examples may mention well-known events in a neutral way.
-- Science scenes show safe habits (goggles, asking the teacher); never cloth near flames or a student handling a chemical spill alone.
+- Science scenes show safe habits (goggles, asking the teacher); no unsafe handling of materials or heat.
 - For feelings and character words, show effort, kindness and bouncing back from mistakes, not only winning.
 - Use a varied mix of everyday first names (for example Maya, Leo, Aisha, Ben, Priya, Diego, Kenji, Zoe)."""
 
@@ -86,7 +86,7 @@ Write the Learn card for "{word}". Field by field:
 - synonyms: 0 to 5 words or short phrases with nearly the same meaning that a learner in this band already uses, easiest first (3-5 learners say "huge", "scared", "unwilling", not "inquisitive", "loath", "apathetic"). Same part of speech as "{word}". Never "{word}", one of its forms, or an entry containing it. Use [] if nothing fits well.
 - antonyms: 0 to 5 true opposites, same rules. Use [] if the word has no clear opposite.
 - right_use.sentence: one more new sentence that uses "{word}" correctly and contains the clue that shows the meaning. It must make sense in the real world.
-- wrong_use.sentence: first pick one real word students confuse with "{word}" (a look-alike or a near-meaning word); write a sentence where that other word is right and "{word}" is wrong in meaning under every dictionary meaning and idiom of "{word}", including ones not listed. Never make it wrong only because the subject is an object, animal or weather, or because the action fails. wrong_use.why: one short, true sentence: "{word}" means …; this sentence needs "<other word>".
+- wrong_use.sentence: a sentence that contains "{word}" itself (or one of its forms), misused (X used where Y belongs). Pick one real word students confuse with "{word}" (a look-alike or a near-meaning word) and put "{word}" in the spot where that other word belongs, so the sentence would be correct if "{word}" were replaced by the other word. The other word does not appear in the sentence. "{word}" is wrong there in meaning under every dictionary meaning and idiom of "{word}", including ones not listed; never make it wrong only because the subject is an object, animal or weather, or because the action fails. wrong_use.why: one short, true sentence that names the other word: "{word}" means …; this sentence needs "<other word>".
 - image_scene: one kid-safe moment an illustrator can draw in a single picture (no change over time) that shows the meaning at a glance: who is there, where they are, and what is happening, in 1 or 2 sentences. The picture must not contain any text, letters, numbers, signs, symbols, or speech bubbles, and no real people, famous characters, or brands.
 - emoji_scene: 3 to 6 emoji that together hint at the meaning, like a tiny picture story. Emoji only: no letters, digits, or words.
 
