@@ -161,7 +161,8 @@ class Repository(ABC):
     @abstractmethod
     def claim_next_job(self, now: str, lease_s: int) -> Job | None:
         """Atomically claim (pending and not_before <= now) or (running and lease_until < now);
-        non-topup kinds first, then created_at. Sets status running, lease_until = now + lease_s and a
+        by kind (image, questions, learn, then topup — finish words already under way first), then created_at.
+        Sets status running, lease_until = now + lease_s and a
         fresh random lease_token (uuid4 hex), and returns the claimed Job carrying that token."""
 
     @abstractmethod

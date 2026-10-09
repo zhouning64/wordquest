@@ -136,6 +136,24 @@ def test_claim_prefers_non_topup_jobs(repo):
     assert repo.claim_next_job(NOW, 300) is None
 
 
+def test_claim_finishes_started_words_first(repo, monkeypatch):
+    # A big list queues hundreds of learn jobs at once; questions and pictures for words that already have a card
+    # must not wait behind all of them. Priority: image, questions, learn, topup — oldest first within a kind.
+    set_clock(monkeypatch, "2026-10-07T11:00:01Z")
+    repo.enqueue_job("learn", "6-8", "l-old", 1, ["questions", "image"])
+    repo.enqueue_job("topup", "6-8", "t-old", 1, [])
+    set_clock(monkeypatch, "2026-10-07T11:00:02Z")
+    repo.enqueue_job("learn", "6-8", "l-new", 1, ["questions", "image"])
+    set_clock(monkeypatch, "2026-10-07T11:00:03Z")
+    repo.enqueue_job("questions", "6-8", "q-old", 1, ["image"])
+    set_clock(monkeypatch, "2026-10-07T11:00:04Z")
+    repo.enqueue_job("questions", "6-8", "q-new", 1, ["image"])
+    set_clock(monkeypatch, "2026-10-07T11:00:05Z")
+    repo.enqueue_job("image", "6-8", "i-new", 1, [])
+    order = [repo.claim_next_job(NOW, 300).word for _ in range(6)]
+    assert order == ["i-new", "q-old", "q-new", "l-old", "l-new", "t-old"]
+
+
 def test_claim_orders_by_created_at(repo, monkeypatch):
     set_clock(monkeypatch, "2026-10-07T11:00:02Z")
     repo.enqueue_job("learn", "6-8", "second", 1, [])

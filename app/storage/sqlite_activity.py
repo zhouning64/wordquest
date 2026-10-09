@@ -176,7 +176,10 @@ class ActivityMixin:
             row = self._fetchone(
                 "SELECT data FROM jobs "
                 "WHERE (status = 'pending' AND not_before <= ?) OR (status = 'running' AND lease_until < ?) "
-                "ORDER BY CASE WHEN kind = 'topup' THEN 1 ELSE 0 END, created_at, rowid LIMIT 1",
+                # Finish words that are already under way before starting new ones: pictures for ready words,
+                # then questions for words with a card, then new cards; learner top-ups last.
+                "ORDER BY CASE kind WHEN 'image' THEN 0 WHEN 'questions' THEN 1 WHEN 'learn' THEN 2 ELSE 3 END, "
+                "created_at, rowid LIMIT 1",
                 (now, now),
             )
             if row is None:
