@@ -99,7 +99,7 @@ def test_band_must_be_one_of_the_literals(band: str) -> None:
         {"session_minutes": 4},
         {"session_minutes": 31},
         {"new_words_per_session": -1},
-        {"new_words_per_session": 11},
+        {"new_words_per_session": 31},
     ],
 )
 def test_profile_settings_ranges(kwargs: dict) -> None:
@@ -109,7 +109,7 @@ def test_profile_settings_ranges(kwargs: dict) -> None:
 
 def test_profile_settings_boundaries_accepted() -> None:
     assert ProfileSettings(session_minutes=5, new_words_per_session=0).session_minutes == 5
-    assert ProfileSettings(session_minutes=30, new_words_per_session=10).new_words_per_session == 10
+    assert ProfileSettings(session_minutes=30, new_words_per_session=30).new_words_per_session == 30
 
 
 @pytest.mark.parametrize("name", ["", "y" * 61])

@@ -50,6 +50,10 @@ no passcodes); the sections below say which lines to fill in.
 Open <http://127.0.0.1:8000>. On the first start the app creates the `data/` folder and the "Starter set" word list.
 Stop the server with `Ctrl+C`.
 
+After changing `.env`, restart with `scripts/restart.sh` (add `--lan` for an iPad or phone on your Wi-Fi). It stops
+the WordQuest server already running on the port, even one started in another terminal, and starts it again in this
+terminal; it refuses to touch a port that another program is using.
+
 To use the app you need at least one learner profile, created in the Parent area (next sections): set a parent
 passcode, add a profile, and assign it a word list.
 
@@ -110,7 +114,7 @@ re-enters the codes. (If you set `SECRET_KEY` in `.env`, change that value inste
 
 In the Parent area:
 
-- **Profiles** — name, avatar, grade band, session length (5–30 minutes), new words per session (0–10), the break
+- **Profiles** — name, avatar, grade band, session length (5–30 minutes), new words per session (0–30), the break
   reminder, and which word lists the learner studies (in order).
 - **Word lists** — paste words one per line or separated by commas (up to 600 per list) and tick the profiles to
   assign. Words start being prepared in the background right away; the page shows "18 / 20 ready" per grade band

@@ -230,6 +230,31 @@ test("stars change only on the word's first graded answer today in a normal sess
   assert.equal(e.starsFor("c"), 2);
 });
 
+// A new word whose first question would sit too close to its intro gets only the intro this session
+// (app/learning/session.py), with empty reserves: it counts as met, and is never re-asked or checked.
+test("an intro-only word (no question in the queue) is met, never re-asked or checked", () => {
+  const e = new SessionEngine(payload({
+    queue: [intro("n"), qi("a"), ...filler(5)],
+    words: { n: wordData("n", { reasks: 0, checks: [0, 0] }), a: wordData("a"), ...fillerWords(5) },
+  }));
+  e.advance();                                  // past the intro
+  assert.equal(e.answerQuestion(false).reaskInserted, true, "a's re-ask still works");
+  assert.equal(e.canCheck("a"), true, "a's lock-in check still works");
+  assert.equal(e.canCheck("n"), false);
+  assert.equal(e.startCheck("n"), null);
+  assert.equal(e.insertReask("n"), false, "no reserves: nothing to re-ask");
+  while (!e.isFinished()) {
+    if (e.current().kind === "question") e.answerQuestion(true);
+    e.advance();
+  }
+  assert.ok(!e.queue.some((it) => it.kind === "question" && it.word === "n"));
+  const s = e.stats();
+  assert.deepEqual(s.newWords, ["n"]);
+  assert.equal(s.answered, 7);                  // a, its re-ask, and the 5 fillers
+  assert.deepEqual(s.missed, ["a"]);
+  assert.equal(e.starsFor("n"), 0);
+});
+
 test("a new word (no progress) goes 0 → 1 star on its first correct answer", () => {
   const e = new SessionEngine(payload({ queue: [intro("n"), qi("n")], words: { n: wordData("n") } }));
   e.advance();

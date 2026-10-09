@@ -239,7 +239,9 @@ export function render(root, ctx) {
     clearInterval(timerId);
     endBtn.disabled = true;
     const local = engine.stats();
-    if (local.answered === 0) {
+    // Nothing to report: go home. A session of intro cards only (each first question was too close to its
+    // intro, so it waits for a later session) still shows results — the new words met.
+    if (local.answered === 0 && local.newWords.length === 0) {
       teardown();
       ctx.navigate(homeHash);
       return;

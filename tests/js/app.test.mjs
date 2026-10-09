@@ -64,6 +64,18 @@ test("summarizeHome uses the profile's new-words setting, capped by ready words"
   assert.equal(none.startLabel, "2 reviews + 0 new");
 });
 
+test("summarizeHome plans only what the session can hold (capacity = max(10, 2 × minutes))", () => {
+  // 15 min → 30 items: 5 reviews leave room for 12 new words (2 slots each), not the setting's 30.
+  const s = summarizeHome({ due_today: 5, ready_new: 40, profile: { session_minutes: 15, new_words_per_session: 30 } });
+  assert.equal(s.startLabel, "5 reviews + 12 new");
+  // Reviews alone fill the session: they are cut to capacity and no new words are planned.
+  const full = summarizeHome({ due_today: 45, ready_new: 9, profile: { session_minutes: 15, new_words_per_session: 5 } });
+  assert.equal(full.startLabel, "30 reviews + 0 new");
+  // 30 min → 60 items: 5 reviews + up to 27 new; a setting of 30 is capped at 27.
+  const long = summarizeHome({ due_today: 5, ready_new: 40, profile: { session_minutes: 30, new_words_per_session: 30 } });
+  assert.equal(long.startLabel, "5 reviews + 27 new");
+});
+
 test("summarizeHome defaults new-per-session to 5 and handles an empty home", () => {
   assert.equal(summarizeHome({ due_today: 0, ready_new: 24 }).startLabel, "0 reviews + 5 new");
   const empty = summarizeHome({});

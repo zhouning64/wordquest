@@ -45,7 +45,7 @@ export function render(root, ctx) {
         ? h("div", { class: "notice" }, "Couldn't reach the server — your answers are saved on this device and will upload next time.")
         : null,
       h("div", { class: "stat-grid" },
-        stat(`${s.accuracy}%`, "accuracy"),
+        stat(s.answered ? `${s.accuracy}%` : "—", "accuracy"),   // intro cards only: no questions, no 0%
         stat(s.answered, "questions"),
         stat(s.newWords, "new words met"),
         stat(s.starsUp.length, "words gained stars")),

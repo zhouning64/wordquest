@@ -3,6 +3,7 @@ import { h, localDate, mount, toast } from "../ui.js";
 import { rememberProfile } from "./profiles.js";
 
 const DEFAULT_NEW_PER_SESSION = 5;   // ProfileSettings.new_words_per_session default
+const DEFAULT_SESSION_MINUTES = 15;  // ProfileSettings.session_minutes default
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
@@ -14,12 +15,19 @@ export function summarizeHome(home) {
   const readyNew = num(hm.ready_new);
   const perRaw = hm.profile?.new_words_per_session;
   const perSession = perRaw === undefined || perRaw === null ? DEFAULT_NEW_PER_SESSION : num(perRaw);
-  const plannedNew = Math.min(readyNew, perSession);
+  const minRaw = hm.profile?.session_minutes;
+  const minutes = minRaw === undefined || minRaw === null ? DEFAULT_SESSION_MINUTES : num(minRaw);
+  // Same sizing as the server (app/learning/session.py capacity and _select_words): reviews fill the session first,
+  // and each new word needs two slots (its intro and its question).
+  const cap = Math.max(10, 2 * minutes);
+  const reviews = Math.min(due, cap);
+  const room = due >= cap ? 0 : Math.floor((cap - due) / 2);
+  const plannedNew = Math.min(readyNew, perSession, room);
   const prep = hm.preparing;
   const preparing = prep && num(prep.total) > num(prep.ready) ? { ready: num(prep.ready), total: num(prep.total) } : null;
-  const startLabel = due === 0 && plannedNew === 0
+  const startLabel = reviews === 0 && plannedNew === 0
     ? "Nothing due right now"
-    : `${plural(due, "review", "reviews")} + ${plannedNew} new`;
+    : `${plural(reviews, "review", "reviews")} + ${plannedNew} new`;
   return {
     mastered: num(hm.mastered),
     learning: num(hm.learning),

@@ -165,10 +165,12 @@ def env(tmp_path):
 
 
 @pytest.fixture
-def three_new_words(env):
-    for word in ("candid", "frugal", "mellow"):
+def five_new_words(env):
+    """Five new words and nothing due: every intro is far enough from its first question for it to be kept."""
+    words = ["candid", "frugal", "mellow", "bold", "nimble"]
+    for word in words:
         add_word(env.repo, word)
-    add_profile(env.repo, "p1", "Ava", [["candid", "frugal", "mellow"]])
+    add_profile(env.repo, "p1", "Ava", [words])
     return env
 
 
@@ -276,6 +278,9 @@ def test_start_session_payload_and_saved_session(env):
     assert data["settings"]["session_minutes"] == 20
     assert {item["word"] for item in data["queue"]} == {"candid", "frugal", "mellow"}
     assert {item["word"] for item in data["queue"] if item["kind"] == "intro"} == {"candid", "frugal", "mellow"}
+    # Three new words alone: each first question would sit too close to its intro, so all wait for a later session.
+    assert [item["kind"] for item in data["queue"]] == ["intro"] * 3
+    assert all(entry["reserves"] == {"reasks": [], "checks": [[], []]} for entry in data["words"].values())
     assert set(data["words"]) == {"candid", "frugal", "mellow"}
     assert all("image_key" not in entry for entry in data["words"].values())
     assert data["words"]["candid"]["image_url"] == "/media/images/6-8/candid-v1.webp"
@@ -370,8 +375,8 @@ def test_phrase_and_punctuated_words_get_a_fetchable_image_url(env, word):
 # --- events ------------------------------------------------------------------------------------
 
 
-def test_events_are_applied_to_progress_and_session(three_new_words):
-    env = three_new_words
+def test_events_are_applied_to_progress_and_session(five_new_words):
+    env = five_new_words
     data = start(env)
     sid = data["session_id"]
     q_candid = question_for(data, "candid")
@@ -403,8 +408,8 @@ def test_events_are_applied_to_progress_and_session(three_new_words):
     assert session.learn_opened == 1
 
 
-def test_resent_events_are_accepted_but_applied_once(three_new_words):
-    env = three_new_words
+def test_resent_events_are_accepted_but_applied_once(five_new_words):
+    env = five_new_words
     data = start(env)
     sid = data["session_id"]
     q = question_for(data, "candid")
@@ -460,8 +465,8 @@ def test_two_devices_answering_the_same_word_on_the_same_day(env):
     assert (mac_session.answered, mac_session.stars_up, mac_session.missed) == (1, [], ["candid"])
 
 
-def test_event_errors(three_new_words):
-    env = three_new_words
+def test_event_errors(five_new_words):
+    env = five_new_words
     r = env.client.post("/api/sessions/nope/events", json={"events": []})
     assert r.status_code == 404
     assert r.json() == {"detail": "session_not_found"}
@@ -487,8 +492,8 @@ def nothing_applied(env, sid: str) -> None:
 
 
 @pytest.mark.parametrize("bad_day", ["today", "2026-1-07", "2026-13-01", "2026-02-30"])
-def test_malformed_event_date_rejects_the_whole_batch(three_new_words, bad_day):
-    env = three_new_words
+def test_malformed_event_date_rejects_the_whole_batch(five_new_words, bad_day):
+    env = five_new_words
     data = start(env)
     sid = data["session_id"]
     events = [
@@ -502,16 +507,16 @@ def test_malformed_event_date_rejects_the_whole_batch(three_new_words, bad_day):
 
 @pytest.mark.parametrize("bad_at", ["today", "2026-10-07T15:00:00", "2026-10-07 15:00:05Z",
                                     "2026-13-07T15:00:00Z", "2026-10-07T25:00:00Z"])
-def test_malformed_event_timestamp_rejects_the_whole_batch(three_new_words, bad_at):
-    env = three_new_words
+def test_malformed_event_timestamp_rejects_the_whole_batch(five_new_words, bad_at):
+    env = five_new_words
     sid = start(env)["session_id"]
     assert upload(env, sid, [ev("intro-candid-1", "candid", "intro_seen", at=bad_at)]).status_code == 422
     nothing_applied(env, sid)
 
 
 @pytest.mark.parametrize("good_at", ["2026-10-07T15:00:05Z", "2026-10-07T15:00:05.5Z", "2026-10-07T15:00:05.123Z"])
-def test_utc_timestamps_with_or_without_fractions_are_accepted(three_new_words, good_at):
-    env = three_new_words
+def test_utc_timestamps_with_or_without_fractions_are_accepted(five_new_words, good_at):
+    env = five_new_words
     sid = start(env)["session_id"]
     r = upload(env, sid, [ev("intro-candid-1", "candid", "intro_seen", at=good_at)])
     assert r.status_code == 200
@@ -519,8 +524,8 @@ def test_utc_timestamps_with_or_without_fractions_are_accepted(three_new_words, 
 
 
 @pytest.mark.parametrize("day", ["2026-10-05", "2026-10-09"])  # two days before and after the session
-def test_event_date_two_days_from_the_session_rejects_the_batch(three_new_words, day):
-    env = three_new_words
+def test_event_date_two_days_from_the_session_rejects_the_batch(five_new_words, day):
+    env = five_new_words
     data = start(env)
     sid = data["session_id"]
     events = [
@@ -535,8 +540,8 @@ def test_event_date_two_days_from_the_session_rejects_the_batch(three_new_words,
 
 
 @pytest.mark.parametrize("day", ["2026-10-06", "2026-10-08"])  # one day either side: midnight, clock skew
-def test_event_date_one_day_from_the_session_is_accepted(three_new_words, day):
-    env = three_new_words
+def test_event_date_one_day_from_the_session_is_accepted(five_new_words, day):
+    env = five_new_words
     data = start(env)
     sid = data["session_id"]
     event = ev("answer-candid-1", "candid", "answer", correct=True, question=question_for(data, "candid"),
@@ -555,8 +560,8 @@ def test_event_date_one_day_from_the_session_is_accepted(three_new_words, day):
     ("question_id", "q" * 65),
     ("question_type", "t" * 65),
 ])
-def test_event_field_bounds_reject_the_whole_batch(three_new_words, field, value):
-    env = three_new_words
+def test_event_field_bounds_reject_the_whole_batch(five_new_words, field, value):
+    env = five_new_words
     sid = start(env)["session_id"]
     good = ev("intro-candid-1", "candid", "intro_seen", at="2026-10-07T15:00:00Z")
     bad = ev("intro-frugal-1", "frugal", "intro_seen", at="2026-10-07T15:00:10Z")
@@ -573,8 +578,8 @@ def test_impossible_calendar_dates_are_422_for_home_and_session_start(env, bad_d
     assert env.repo.list_sessions("p1", 10) == []
 
 
-def test_keyerror_inside_the_apply_step_is_a_500_not_a_missing_session(three_new_words, monkeypatch):
-    env = three_new_words
+def test_keyerror_inside_the_apply_step_is_a_500_not_a_missing_session(five_new_words, monkeypatch):
+    env = five_new_words
     sid = start(env)["session_id"]
 
     def broken_apply(session, progress, events):
@@ -592,8 +597,8 @@ def test_keyerror_inside_the_apply_step_is_a_500_not_a_missing_session(three_new
 # --- finish------------------------------------------------------------------------------------
 
 
-def test_finish_returns_results_and_closes_the_session(three_new_words):
-    env = three_new_words
+def test_finish_returns_results_and_closes_the_session(five_new_words):
+    env = five_new_words
     data = start(env)
     sid = data["session_id"]
     events = [

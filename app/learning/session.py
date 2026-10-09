@@ -10,7 +10,9 @@ PRACTICE_MAX_WORDS = 12
 RESERVE_TIERS = (1, 2)
 CHECK_SET_SIZE = 3
 MAX_REASKS = 2
-INTRO_GAPS = (3, 4, 5)
+# A new word's first question needs at least this many other items between it and its intro card, so it
+# cannot be answered from short-term memory; a word that cannot get that spacing is quizzed in a later session.
+MIN_ITEMS_BETWEEN_INTRO_AND_QUESTION = 4
 # Tier mix by stage (§8.2): list of (tier, probability), probabilities sum to 1.
 TIER_MIX: dict[int, tuple[tuple[int, float], ...]] = {
     0: ((1, 1.0),),
@@ -54,8 +56,8 @@ def _eligible(inp: SessionInputs) -> list[str]:
 
 
 def _select_words(inp: SessionInputs) -> tuple[list[str], list[str]]:
-    """Returns (scheduled words in order, new words in order). Lists are already cut to fit capacity,
-    so the queue never needs truncation and an intro is never separated from its question."""
+    """Returns (scheduled words in order, new words in order). Lists are already cut to fit capacity
+    (reviews + 2 × new ≤ capacity, the most a queue can hold), so the queue never needs truncation."""
     if inp.mode not in ("normal", "practice"):
         raise ValueError(f"unknown session mode: {inp.mode}")
     cap = capacity(inp.profile.settings.session_minutes)
@@ -69,7 +71,13 @@ def _select_words(inp: SessionInputs) -> tuple[list[str], list[str]]:
         w for w in ready
         if w in prog and prog[w].due_date is not None and prog[w].due_date <= inp.local_date
     ]
-    reviews.sort(key=lambda w: (prog[w].due_date, prog[w].stage))
+    # A word introduced today and never asked (its first question was dropped or cut by the timer) goes last, so a
+    # session started right after its intro does not ask it while it is still in short-term memory.
+    reviews.sort(key=lambda w: (
+        prog[w].introduced_on == inp.local_date and prog[w].last_graded_on is None,
+        prog[w].due_date,
+        prog[w].stage,
+    ))
     reviews = reviews[:cap]
     if len(reviews) >= cap:
         n_new = 0
@@ -81,41 +89,30 @@ def _select_words(inp: SessionInputs) -> tuple[list[str], list[str]]:
 
 # ---------- queue layout ----------
 
-def _layout(reviews: list[str], new_words: list[str], rng: random.Random) -> list[tuple[str, str]]:
-    """Deterministic interleave.
+def _layout(reviews: list[str], new_words: list[str]) -> list[tuple[str, str]]:
+    """Deterministic order.
     1. Base order: reviews in order; new word i's intro goes just before review (i * len(reviews)) // len(new_words)
        (all intros first when there are no reviews).
-    2. When an intro lands at queue index s, its question reserves index s + g, g = rng.randint(3, 5)
-       (if taken, the other gaps 3, 4, 5 are tried in order; at most two are ever taken).
-       Reserved indexes are filled by questions, the others by base items in order.
-    3. Questions whose reserved index lies past the last base item are appended at the end in index order."""
+    2. New words' first questions form one block at the very end, in intro order.
+    3. A question is kept only if at least MIN_ITEMS_BETWEEN_INTRO_AND_QUESTION other items sit between it and its
+       intro; otherwise the word gets its intro only (it is then stage 0, due today) and is quizzed in a later session.
+    Each question is checked at the index it takes in the final queue (later items are only appended after it).
+    Because intros come in block order, that spacing shrinks along the block: the dropped questions are always the
+    block's tail, so dropping them moves no kept question."""
     r, n = len(reviews), len(new_words)
-    base: list[tuple[str, str]] = []
+    queue: list[tuple[str, str]] = []
+    intro_at: dict[str, int] = {}
     ni = 0
     for ri in range(r + 1):
         while ni < n and (ni * r) // n == ri:
-            base.append(("intro", new_words[ni]))
+            intro_at[new_words[ni]] = len(queue)
+            queue.append(("intro", new_words[ni]))
             ni += 1
         if ri < r:
-            base.append(("question", reviews[ri]))
-    queue: list[tuple[str, str]] = []
-    reserved: dict[int, str] = {}
-    bi = 0
-    while bi < len(base):
-        s = len(queue)
-        if s in reserved:
-            queue.append(("question", reserved.pop(s)))
-            continue
-        kind, word = base[bi]
-        bi += 1
-        queue.append((kind, word))
-        if kind == "intro":
-            first = rng.randint(INTRO_GAPS[0], INTRO_GAPS[-1])
-            options = [first] + [g for g in INTRO_GAPS if g != first]
-            gap = next(g for g in options if s + g not in reserved)
-            reserved[s + gap] = word
-    for slot in sorted(reserved):
-        queue.append(("question", reserved[slot]))
+            queue.append(("question", reviews[ri]))
+    for word in new_words:
+        if len(queue) - intro_at[word] - 1 >= MIN_ITEMS_BETWEEN_INTRO_AND_QUESTION:
+            queue.append(("question", word))
     return queue
 
 
@@ -211,7 +208,7 @@ def _reserves(pool: list[Question], main: Question, seen_ids: list[str]) -> tupl
 def build_session(inp: SessionInputs) -> dict:
     rng = random.Random(inp.seed)
     scheduled, new_words = _select_words(inp)
-    layout = _layout(scheduled, new_words, rng)
+    layout = _layout(scheduled, new_words)
 
     order: list[str] = []
     for _, word in layout:
@@ -237,7 +234,12 @@ def build_session(inp: SessionInputs) -> dict:
     for word in order:
         c = inp.contents[word]
         p = inp.progress.get(word)
-        set1, set2, reasks = _reserves(_verified(inp, word), mains[word], list(p.seen_question_ids) if p else [])
+        if word in mains:
+            set1, set2, reasks = _reserves(_verified(inp, word), mains[word], list(p.seen_question_ids) if p else [])
+        else:
+            # Intro only this session (first question too close to it): no question can be missed or checked,
+            # so the browser never reads its reserves. Empty sets keep the payload shape (two check sets).
+            set1, set2, reasks = [], [], []
         words[word] = {
             "card": c.card.model_dump(mode="json") if c.card is not None else None,
             "image_key": c.image_key,
