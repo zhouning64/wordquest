@@ -190,7 +190,8 @@ test("validateProfile enforces the spec limits", () => {
   assert.equal(validateProfile({ ...ok, session_minutes: 31 }).length, 1);
   assert.equal(validateProfile({ ...ok, session_minutes: 7.5 }).length, 1);
   assert.deepEqual(validateProfile({ ...ok, session_minutes: "30", new_words_per_session: "0" }), []);
-  assert.equal(validateProfile({ ...ok, new_words_per_session: 11 }).length, 1);
+  assert.deepEqual(validateProfile({ ...ok, new_words_per_session: 30 }), []);
+  assert.equal(validateProfile({ ...ok, new_words_per_session: 31 }).length, 1);
   assert.equal(validateProfile({ ...ok, new_words_per_session: -1 }).length, 1);
   assert.equal(validateProfile({ ...ok, break_message: "  " }).length, 1);
   assert.deepEqual(validateProfile({ ...ok, break_reminder: false, break_message: "" }), []);

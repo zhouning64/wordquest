@@ -6,7 +6,9 @@ from collections import Counter
 
 import pytest
 
+from app.learning import session as session_module
 from app.learning.session import SessionInputs, build_session, capacity, topup_words
+from app.learning.srs import apply_intro
 from app.models import TIER, LearnCard, Profile, ProfileSettings, Question, Sense, WordContent, WordProgress
 
 TODAY = "2026-10-07"
@@ -16,6 +18,8 @@ FULL_MIX = [
     "spell_it", "spell_it", "word_parts",
 ]
 PUBLIC_KEYS = {"id", "type", "tier", "prompt", "choices", "answer_index", "accepted_answers", "explanation"}
+MIN_BETWEEN = 4  # other items required between a new word's intro and its first question
+NO_RESERVES = {"reasks": [], "checks": [[], []]}
 
 
 # ---------- builders (local to this file) ----------
@@ -116,7 +120,7 @@ def test_queue_never_exceeds_capacity():
     assert len(set(qwords(payload))) == 10
 
 
-def test_truncation_keeps_intro_and_question_together():
+def test_new_words_fit_capacity_without_truncation():
     words = [f"n{i:02d}" for i in range(20)]
     for reviews in (0, 3, 7):
         progress = [prog(w, 1, TODAY) for w in words[:reviews]]
@@ -125,8 +129,10 @@ def test_truncation_keeps_intro_and_question_together():
         intros = intro_words(payload)
         assert len(intros) == min(10, (10 - reviews) // 2)
         for w in intros:
-            assert qwords(payload).count(w) == 1
-        assert set(payload["words"]) == set(qwords(payload))
+            assert qwords(payload).count(w) <= 1  # a too-close first question is dropped, never duplicated
+            between = items_between(payload, w)
+            assert between is None or between >= MIN_BETWEEN
+        assert set(payload["words"]) == {it["word"] for it in payload["queue"]}
 
 
 def test_only_current_list_words_are_used():
@@ -157,7 +163,7 @@ def test_ready_filtering():
     progress = [prog("due_pending", 2, TODAY)]
     payload = build_session(inputs(words, progress=progress, contents=contents, pools=pools))
     assert intro_words(payload) == ["ok"]
-    assert qwords(payload) == ["ok"]
+    assert qwords(payload) == []  # a lone new word is too close to its intro: intro only this session
     assert payload["preparing"] == {"ready": 1, "total": 7}
     assert payload["empty_reason"] is None
 
@@ -165,7 +171,7 @@ def test_ready_filtering():
 def test_unverified_questions_are_never_used():
     mixed = pool("ok", ["meaning", "pick_word"], verified=False) + [q("ok", "fill_blank", 5)]
     for seed in range(20):
-        payload = build_session(inputs(["ok"], pools={"ok": mixed}, seed=seed))
+        payload = build_session(inputs(["ok"], progress=[prog("ok", 0, TODAY)], pools={"ok": mixed}, seed=seed))
         assert main_q(payload, "ok")["id"] == "ok-fill_blank-5"
         reserves = payload["words"]["ok"]["reserves"]
         ids = {x["id"] for s in reserves["checks"] for x in s} | {x["id"] for x in reserves["reasks"]}
@@ -184,6 +190,19 @@ def test_review_ordering_by_due_then_stage():
     payload = build_session(inputs(words, progress=progress, new=0))
     assert qwords(payload) == ["w2", "w3", "w1", "w4"]
     assert [it["kind"] for it in payload["queue"]] == ["question"] * 4
+
+
+def test_words_introduced_today_and_never_asked_go_last_among_reviews():
+    # An intro-only word (introduced today, never graded) is due today; asking it first in a session started right
+    # after its intro would test short-term memory, so it comes after every other review.
+    fresh = WordProgress(profile_id="p1", word="fresh", stage=0, due_date=TODAY, introduced_on=TODAY)
+    progress = [fresh, prog("old1", 2, "2026-10-05"), prog("old2", 1, TODAY)]
+    payload = build_session(inputs(["fresh", "old1", "old2"], progress=progress, new=0))
+    assert qwords(payload) == ["old1", "old2", "fresh"]
+    # Once it has been answered (last_graded_on set), it sorts normally again.
+    graded = fresh.model_copy(update={"last_graded_on": TODAY})
+    payload = build_session(inputs(["fresh", "old1", "old2"], progress=[graded, *progress[1:]], new=0))
+    assert qwords(payload) == ["old1", "fresh", "old2"]
 
 
 def test_no_new_words_when_reviews_fill_capacity():
@@ -215,52 +234,155 @@ def test_new_words_in_list_order_up_to_setting():
 
 # ---------- queue layout ----------
 
-def _check_spacing(payload: dict, news: list[str]) -> None:
+def shape(payload: dict) -> list[str]:
+    """The queue as compact tokens: "I:word" for an intro, "Q:word" for a question."""
+    return [f"{'I' if it['kind'] == 'intro' else 'Q'}:{it['word']}" for it in payload["queue"]]
+
+
+def mixed_session(n_reviews: int, n_new: int, *, seed: int = 0) -> tuple[dict, list[str], list[str]]:
+    """n_reviews due reviews r0.. (stage 1) and n_new new words n0.., with room for all of them."""
+    reviews = [f"r{i}" for i in range(n_reviews)]
+    news = [f"n{i}" for i in range(n_new)]
+    progress = [prog(w, 1, TODAY) for w in reviews]
+    payload = build_session(inputs(reviews + news, progress=progress, minutes=30, new=n_new, seed=seed))
+    return payload, reviews, news
+
+
+def items_between(payload: dict, word: str) -> int | None:
+    """Other items strictly between the word's intro and its question; None when it has no question."""
     queue = payload["queue"]
+    i = next(k for k, it in enumerate(queue) if it["kind"] == "intro" and it["word"] == word)
+    j = next((k for k, it in enumerate(queue) if it["kind"] == "question" and it["word"] == word), None)
+    return None if j is None else j - i - 1
+
+
+def test_spacing_constant_replaces_intro_gaps():
+    assert session_module.MIN_ITEMS_BETWEEN_INTRO_AND_QUESTION == MIN_BETWEEN
+    assert not hasattr(session_module, "INTRO_GAPS")
+
+
+R = [f"Q:r{i}" for i in range(9)]
+
+
+@pytest.mark.parametrize("n_reviews, n_new, expected", [
+    # 0 reviews + 5 new: all intros, then the block; each question has exactly 4 items between → all kept
+    (0, 5, ["I:n0", "I:n1", "I:n2", "I:n3", "I:n4", "Q:n0", "Q:n1", "Q:n2", "Q:n3", "Q:n4"]),
+    # 0 reviews + 4 / 3 new: only 3 / 2 items between → intros only
+    (0, 4, ["I:n0", "I:n1", "I:n2", "I:n3"]),
+    (0, 3, ["I:n0", "I:n1", "I:n2"]),
+    # 1 new + 0 reviews: intro only
+    (0, 1, ["I:n0"]),
+    # 1 new + 6 reviews: 6 items between → kept
+    (6, 1, ["I:n0", *R[:6], "Q:n0"]),
+    # 1 new + 4 reviews: exactly 4 between → kept; 1 new + 3 reviews: 3 between → dropped
+    (4, 1, ["I:n0", *R[:4], "Q:n0"]),
+    (3, 1, ["I:n0", *R[:3]]),
+    # 3 reviews + 3 new: n0 has 5 between, n1 4, n2 would have 3 → only the block's tail (n2) is dropped
+    (3, 3, ["I:n0", "Q:r0", "I:n1", "Q:r1", "I:n2", "Q:r2", "Q:n0", "Q:n1"]),
+    # 9 reviews + 3 new: intros spread among the reviews as before; 11, 8 and 5 between → all kept
+    (9, 3, ["I:n0", *R[0:3], "I:n1", *R[3:6], "I:n2", *R[6:9], "Q:n0", "Q:n1", "Q:n2"]),
+])
+def test_pinned_layouts(n_reviews, n_new, expected):
+    payload, _, news = mixed_session(n_reviews, n_new)
+    assert shape(payload) == expected
     for w in news:
-        i = next(k for k, it in enumerate(queue) if it["kind"] == "intro" and it["word"] == w)
-        j = next(k for k, it in enumerate(queue) if it["kind"] == "question" and it["word"] == w)
-        assert j > i
-        gap = j - i
-        assert gap <= 5
-        if gap < 3:  # only allowed when the question was pushed to the end of the queue
-            assert all(it["kind"] == "question" and it["word"] in news for it in queue[j:])
+        between = items_between(payload, w)
+        assert between is None or between >= MIN_BETWEEN
 
 
-@pytest.mark.parametrize("seed", range(40))
-def test_intro_question_spacing_with_reviews(seed):
-    reviews = [f"r{i}" for i in range(10)]
-    news = ["n0", "n1", "n2"]
-    progress = [prog(w, 1, TODAY) for w in reviews]
-    payload = build_session(inputs(reviews + news, progress=progress, new=3, seed=seed))
-    assert len(payload["queue"]) == 16
-    assert intro_words(payload) == news
-    assert [w for w in qwords(payload) if w.startswith("r")] == reviews  # reviews keep their order
-    _check_spacing(payload, news)
+def test_five_reviews_and_25_new_words():
+    payload, reviews, news = mixed_session(5, 25)
+    base = []
+    for r in range(5):  # five intros before each review: intro i goes just before review (i * 5) // 25
+        base += [f"I:n{5 * r + k}" for k in range(5)] + [f"Q:r{r}"]
+    assert shape(payload) == base + [f"Q:{w}" for w in news]  # every question kept, block at the end in intro order
+    assert len(payload["queue"]) == 55 <= capacity(30)
+    assert min(items_between(payload, w) for w in news) == 25  # the last intro (n24) is the closest
     for w in news:
-        i = next(k for k, it in enumerate(payload["queue"]) if it["kind"] == "intro" and it["word"] == w)
-        j = next(k for k, it in enumerate(payload["queue"]) if it["kind"] == "question" and it["word"] == w)
-        assert 3 <= j - i <= 5  # plenty of reviews: never pushed to the end
+        assert items_between(payload, w) >= MIN_BETWEEN
 
 
-@pytest.mark.parametrize("seed", range(40))
-def test_intro_question_spacing_new_words_only(seed):
-    news = [f"n{i}" for i in range(5)]
-    payload = build_session(inputs(news, new=5, seed=seed))
-    assert len(payload["queue"]) == 10
-    assert intro_words(payload) == news
-    assert payload["queue"][0] == {"kind": "intro", "word": "n0"}
-    _check_spacing(payload, news)
+@pytest.mark.parametrize("n_new", range(0, 21))
+@pytest.mark.parametrize("n_reviews", range(0, 13))
+def test_layout_rule_holds_for_every_mix(n_reviews, n_new):
+    payload, reviews, news = mixed_session(n_reviews, n_new)
+    queue = payload["queue"]
+    # 1. new words' first questions form one block at the very end, in intro order (a prefix of the new words)
+    block = 0
+    while block < len(queue) and queue[-1 - block]["kind"] == "question" and queue[-1 - block]["word"] in news:
+        block += 1
+    base, tail = queue[: len(queue) - block], queue[len(queue) - block:]
+    kept = [it["word"] for it in tail]
+    assert kept == news[: len(kept)]
+    # 2. base order unchanged: reviews in order, intro i just before review (i * reviews) // new (all first if none)
+    assert [it["word"] for it in base if it["kind"] == "question"] == reviews
+    assert [it["word"] for it in base if it["kind"] == "intro"] == news
+    for i, w in enumerate(news):
+        k = next(k for k, it in enumerate(base) if it["kind"] == "intro" and it["word"] == w)
+        assert sum(1 for it in base[:k] if it["kind"] == "question") == (i * n_reviews) // n_new
+    # 3. the rule, on the full block and on the final queue: kept iff >= 4 other items between
+    intro_at = {it["word"]: k for k, it in enumerate(base) if it["kind"] == "intro"}
+    for i, w in enumerate(news):
+        between_in_full_block = len(base) + i - intro_at[w] - 1
+        if w in kept:
+            assert between_in_full_block >= MIN_BETWEEN
+            assert items_between(payload, w) == between_in_full_block  # dropping the tail moved nothing
+        else:
+            assert between_in_full_block < MIN_BETWEEN
+            assert items_between(payload, w) is None
+    # 4. every queue word has its card; a word with no question this session has no reserves
+    assert set(payload["words"]) == set(reviews) | set(news)
+    for w in news:
+        assert payload["words"][w]["card"] is not None
+        if w not in kept:
+            assert payload["words"][w]["reserves"] == NO_RESERVES
 
 
-def test_new_words_are_spread_among_reviews():
-    reviews = [f"r{i}" for i in range(9)]
-    news = ["n0", "n1", "n2"]
-    progress = [prog(w, 1, TODAY) for w in reviews]
-    payload = build_session(inputs(reviews + news, progress=progress, new=3))
-    idx = [k for k, it in enumerate(payload["queue"]) if it["kind"] == "intro"]
-    assert idx[0] == 0
-    assert idx[1] - idx[0] >= 3 and idx[2] - idx[1] >= 3
+def test_layout_does_not_depend_on_the_seed():
+    shapes = {tuple(shape(mixed_session(3, 3, seed=seed)[0])) for seed in range(20)}
+    assert len(shapes) == 1
+
+
+def test_intro_only_word_keeps_card_and_image_and_gets_no_reserves():
+    words = ["n0", "n1", "n2"]
+    contents = {w: content(w, image_key=f"images/6-8/{w}-v1.webp") for w in words}
+    payload = build_session(inputs(words, contents=contents))  # 0 reviews + 3 new → intros only
+    json.dumps(payload)
+    assert shape(payload) == ["I:n0", "I:n1", "I:n2"]
+    assert payload["empty_reason"] is None
+    for w in words:
+        entry = payload["words"][w]
+        assert entry["card"] == contents[w].card.model_dump(mode="json")
+        assert entry["image_key"] == f"images/6-8/{w}-v1.webp"
+        assert (entry["stage"], entry["last_graded_on"]) == (0, None)
+        assert entry["reserves"] == NO_RESERVES
+
+
+def test_words_with_a_question_keep_full_reserves_next_to_an_intro_only_word():
+    payload, reviews, news = mixed_session(3, 3)  # n2 is intro only (see test_pinned_layouts)
+    assert payload["words"]["n2"]["reserves"] == NO_RESERVES
+    for w in reviews + ["n0", "n1"]:
+        res = payload["words"][w]["reserves"]
+        main_id = main_q(payload, w)["id"]
+        assert [len(s) for s in res["checks"]] == [3, 3]
+        assert len(res["reasks"]) == 2
+        assert main_id not in {x["id"] for s in res["checks"] for x in s} | {x["id"] for x in res["reasks"]}
+
+
+def test_intro_only_word_is_quizzed_as_a_review_in_the_next_session():
+    words = ["n0", "n1", "n2"]
+    first = build_session(inputs(words))
+    assert shape(first) == ["I:n0", "I:n1", "I:n2"]
+    progress = []
+    for w in words:  # the learner saw each intro: intro_seen makes the word stage 0, due today
+        p = WordProgress(profile_id="p1", word=w)
+        apply_intro(p, TODAY)
+        assert (p.stage, p.due_date) == (0, TODAY)
+        progress.append(p)
+    later = build_session(inputs(words, progress=progress))
+    assert shape(later) == ["Q:n0", "Q:n1", "Q:n2"]
+    for w in words:
+        assert main_q(later, w)["tier"] == 1
 
 
 # ---------- practice mode ----------
@@ -306,8 +428,9 @@ def test_unknown_mode_is_rejected():
 
 @pytest.mark.parametrize("seed", range(30))
 def test_stage_0_and_1_words_get_tier_1(seed):
-    words = ["fresh", "zero", "one"]
-    progress = [prog("zero", 0, TODAY), prog("one", 1, TODAY)]
+    fillers = [f"f{i}" for i in range(4)]  # enough reviews for "fresh" to keep its first question
+    words = ["fresh", "zero", "one"] + fillers
+    progress = [prog("zero", 0, TODAY), prog("one", 1, TODAY)] + [prog(w, 1, TODAY) for w in fillers]
     payload = build_session(inputs(words, progress=progress, seed=seed))
     for w in words:
         assert main_q(payload, w)["tier"] == 1
@@ -444,7 +567,7 @@ def test_reserves_sets_overlap_before_repeating_main():
 def test_reserves_with_legacy_pool_of_five():
     legacy = pool("w", ["meaning", "pick_word", "fill_blank", "spell_it", "synonym"])
     for seed in range(20):
-        payload = build_session(inputs(["w"], pools={"w": legacy}, seed=seed))  # new word: stage 0
+        payload = build_session(inputs(["w"], progress=[prog("w", 0, TODAY)], pools={"w": legacy}, seed=seed))
         main_id = main_q(payload, "w")["id"]
         assert main_q(payload, "w")["tier"] == 1
         res = payload["words"]["w"]["reserves"]
@@ -458,7 +581,7 @@ def test_reserves_with_legacy_pool_of_five():
 def test_reserves_with_tiny_four_question_pool():
     tiny = pool("w", ["meaning", "pick_word", "fill_blank", "spell_it"])
     for seed in range(20):
-        payload = build_session(inputs(["w"], pools={"w": tiny}, seed=seed))
+        payload = build_session(inputs(["w"], progress=[prog("w", 0, TODAY)], pools={"w": tiny}, seed=seed))
         main_id = main_q(payload, "w")["id"]
         res = payload["words"]["w"]["reserves"]
         set1, set2 = res["checks"]
@@ -539,10 +662,9 @@ def test_empty_reason_practice_with_no_shaky_words():
 def test_tiny_and_exhausted_lists_still_build():
     """Review Focus 4: a one-word list (new or due) gives a short queue; an all-mastered list gives a reason."""
     new_solo = build_session(inputs(["solo"]))
-    assert [it["kind"] for it in new_solo["queue"]] == ["intro", "question"]  # question pushed to the end
+    assert [it["kind"] for it in new_solo["queue"]] == ["intro"]  # first question too close: next session
     assert new_solo["empty_reason"] is None and list(new_solo["words"]) == ["solo"]
-    set1, set2 = new_solo["words"]["solo"]["reserves"]["checks"]
-    assert len(set1) == 3 and len(set2) == 3
+    assert new_solo["words"]["solo"]["reserves"] == NO_RESERVES
     json.dumps(new_solo)
     due_solo = build_session(inputs(["solo"], progress=[prog("solo", 2, TODAY)]))
     assert [it["kind"] for it in due_solo["queue"]] == ["question"]

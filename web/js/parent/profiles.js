@@ -102,8 +102,9 @@ async function renderForm(root, ctx, id) {
       <p class="muted" id="band-note" hidden>Changing the band starts preparing this profile's words for the new band. Stars are kept.</p>
       <label class="pfield"><span>Session length in minutes (5–30)</span>
         <input type="number" name="session_minutes" min="5" max="30" step="1" inputmode="numeric" value="${esc(state.session_minutes)}"></label>
-      <label class="pfield"><span>New words per session (0–10)</span>
-        <input type="number" name="new_words_per_session" min="0" max="10" step="1" inputmode="numeric" value="${esc(state.new_words_per_session)}"></label>
+      <label class="pfield"><span>New words per session (0–30)</span>
+        <input type="number" name="new_words_per_session" min="0" max="30" step="1" inputmode="numeric" value="${esc(state.new_words_per_session)}"></label>
+      <p class="muted">A session fits about one new word per minute, fewer on days with many reviews.</p>
       <label class="pcheck"><input type="checkbox" name="break_reminder"${state.break_reminder ? " checked" : ""}> Show a break reminder after each session</label>
       <label class="pfield"><span>Break message</span>
         <input type="text" name="break_message" maxlength="200" value="${esc(state.break_message)}"${state.break_reminder ? "" : " disabled"}></label>

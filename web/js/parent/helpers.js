@@ -281,8 +281,8 @@ export function validateProfile(f) {
     errs.push("Session length must be a whole number of minutes from 5 to 30.");
   }
   const nw = Number(f.new_words_per_session);
-  if (String(f.new_words_per_session).trim() === "" || !Number.isInteger(nw) || nw < 0 || nw > 10) {
-    errs.push("New words per session must be a whole number from 0 to 10.");
+  if (String(f.new_words_per_session).trim() === "" || !Number.isInteger(nw) || nw < 0 || nw > 30) {
+    errs.push("New words per session must be a whole number from 0 to 30.");
   }
   if (f.break_reminder && !String(f.break_message || "").trim()) {
     errs.push("Write a break message or turn the break reminder off.");

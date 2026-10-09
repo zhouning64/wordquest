@@ -134,7 +134,7 @@ wordquest/
 IDs are short random strings (`uuid4().hex[:12]`). Composite keys are formatted strings so they map 1:1 to Firestore document IDs in Phase 2. Timestamps are UTC ISO-8601; learner-day logic uses the **learner's local date** (`YYYY-MM-DD`) sent by the browser.
 
 **Profile** — key `id`
-`name` (1–30 chars), `avatar` (one emoji), `band` (`3-5` | `6-8` | `9-12`), `list_ids` (ordered), `settings`: `session_minutes` (5–30, default 15), `new_words_per_session` (0–10, default 5), `break_reminder` (bool, default true), `break_message` (default "Take a 10-minute break — look at something far away."), `created_at`.
+`name` (1–30 chars), `avatar` (one emoji), `band` (`3-5` | `6-8` | `9-12`), `list_ids` (ordered), `settings`: `session_minutes` (5–30, default 15), `new_words_per_session` (0–30, default 5), `break_reminder` (bool, default true), `break_message` (default "Take a 10-minute break — look at something far away."), `created_at`.
 
 **WordList** — key `id`
 `name` (1–60 chars), `words` (ordered, normalized per §6.2, max 600), `created_at`, `updated_at`.
@@ -345,7 +345,7 @@ Inputs: profile, `mode`, learner `local_date`. Only words in the profile's **cur
 - **Reviews:** eligible words with progress where `due_date ≤ local_date` and content `ready`, sorted by `due_date` ascending, then `stage` ascending.
 - **New words (normal mode only):** eligible words (list order, then word order) with no progress and content `ready`; take `new_words_per_session`, reduced to `0` if reviews alone ≥ `C`, else to `min(new_words_per_session, floor((C − reviews)/2))`.
 - **Practice mode:** eligible words with stage 1–3, ordered by stage ascending then `wrong` descending; at most 12; no new words. Practice answers never change stars (§8.5).
-- **Queue:** each new word contributes an `intro` item and a `question` item placed 3–5 positions later; each review contributes one `question` item; new words are spread among reviews. The queue is truncated to `C`.
+- **Queue:** each review contributes one `question` item; each new word contributes an `intro` item, spread among the reviews (all intros first when there are none). New words' first `question` items form one block at the end of the queue, in intro order; a new word keeps its question only if **≥ 4 other items** sit between its intro and that question (`MIN_ITEMS_BETWEEN_INTRO_AND_QUESTION`), so it is not answered from short-term memory. A word that is too close gets its intro only (no question, empty reserves): `intro_seen` makes it stage 0, due today, so it is first quizzed in a later session. Word selection already fits `C`, so nothing is truncated.
 - **Main question per item:** choose the tier from the word's stage (§8.2); prefer verified questions not in `seen_question_ids`; if none unseen in that tier, use the adjacent tier; if still none, the least-recently-seen question in any tier.
 - **Reserves per session word** (so the browser never needs another round trip), drawn from **tiers 1–2**: 2 lock-in sets of 3 questions each (each set spanning ≥ 2 types) and up to 2 re-ask questions. Priority when the pool is too small for everything to be distinct: (1) no lock-in question repeats the main question; (2) the two lock-in sets are disjoint; (3) re-asks are distinct from all of the above — re-asks are dropped first (a dropped re-ask reuses a lock-in question the learner has not yet seen, or is skipped).
 - **Payload:** the ordered queue; for each word its Learn card, image URL, current `stage`, `last_graded_on`, and reserves; profile settings (timer, break reminder).
@@ -396,7 +396,7 @@ Interval table (days) by the stage reached after a correct answer: 1 → 1, 2 �
 
 ### 8.6 Session end
 
-The session ends when the timer reaches 0 (the current item is finished first), the queue is exhausted, or the learner taps "✕ End" (if ≥ 1 answer, results are shown; otherwise return home). The timer keeps running on the Learn and check screens. Results show: accuracy, questions answered, new words met, words that gained stars, up to 5 "keep practicing" words (lowest stage among words missed this session), and the break reminder card if enabled.
+The session ends when the timer reaches 0 (the current item is finished first), the queue is exhausted, or the learner taps "✕ End" (if ≥ 1 answer, results are shown; otherwise return home). A session that runs out of items shows results if the learner answered a question or met a new word (accuracy shows "—" with no answers). The timer keeps running on the Learn and check screens. Results show: accuracy, questions answered, new words met, words that gained stars, up to 5 "keep practicing" words (lowest stage among words missed this session), and the break reminder card if enabled.
 
 ## 9. HTTP API
 

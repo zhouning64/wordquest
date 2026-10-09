@@ -13,12 +13,14 @@ class FakeNode {
     this.className = "";
     this.textContent = "";
     this.classList = { toggle() {}, add() {}, remove() {}, contains: () => false };
+    this.listeners = {};
   }
   appendChild(child) { this.children.push(child); return child; }
   replaceChildren(...nodes) { this.children = nodes; }
   setAttribute(k, v) { this.attrs[k] = String(v); }
-  addEventListener() {}
+  addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   removeEventListener() {}
+  click() { for (const fn of this.listeners.click || []) fn({ stopPropagation() {} }); }
   focus() {}
   querySelector() { return null; }
 }
@@ -81,4 +83,50 @@ test("teardown leaves a newer session payload alone", () => {
   state.session = newer;
   teardown();
   assert.equal(state.session, newer);
+});
+
+// ---- a session made only of intro cards (each first question was too close to its intro) ----
+const nodes = (n) => [n, ...n.children.flatMap((c) => (typeof c === "object" ? nodes(c) : []))];
+const text = (n) => nodes(n).filter((x) => x.nodeType === 3).map((x) => x.textContent).join("");
+const statValue = (root, label) => {
+  const stat = nodes(root).find((x) => x.className === "stat" && text(x).endsWith(label));
+  return stat && text(stat.children[0]);
+};
+const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+
+test("a session of intros only ends on the results screen with the new words met, not silently at home", async () => {
+  installDom();
+  const uploads = [];
+  globalThis.fetch = async (url, opts) => {
+    uploads.push(url);
+    const accepted = JSON.parse(opts.body).events.map((e) => e.client_event_id);
+    return { ok: true, status: 200, text: async () => JSON.stringify({ accepted }) };
+  };
+  try {
+    const state = { profileId: "p1", session: payload() };
+    const { ctx, navigations } = makeCtx(state);
+    const posted = [];
+    ctx.api = {
+      post: async (path) => {
+        posted.push(path);
+        return { accuracy: 0, answered: 0, new_words: ["frugal"], stars_up: [], keep_practicing: [],
+          break_reminder: false, break_message: "" };
+      },
+    };
+    const root = new FakeNode("main");
+    render(root, ctx);
+    const gotIt = nodes(root).find((x) => x.tagName === "BUTTON" && text(x).startsWith("Got it"));
+    gotIt.click();   // the last (only) item: the queue is exhausted
+    await settle();
+
+    assert.deepEqual(navigations, [], "not sent home");
+    assert.ok(uploads.some((u) => u.endsWith("/events")), "intro_seen is uploaded before /finish");
+    assert.deepEqual(posted, ["/api/sessions/s1/finish"]);
+    assert.ok(text(root).includes("Session complete!"));
+    assert.equal(statValue(root, "new words met"), "1");
+    assert.equal(statValue(root, "questions"), "0");
+    assert.equal(statValue(root, "accuracy"), "—", "no questions: no 0% accuracy");
+  } finally {
+    delete globalThis.fetch;
+  }
 });

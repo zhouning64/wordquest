@@ -37,7 +37,7 @@ def new_id() -> str:
 
 class ProfileSettings(BaseModel):
     session_minutes: int = Field(15, ge=5, le=30)
-    new_words_per_session: int = Field(5, ge=0, le=10)
+    new_words_per_session: int = Field(5, ge=0, le=30)
     break_reminder: bool = True
     break_message: str = "Take a 10-minute break — look at something far away."
 
