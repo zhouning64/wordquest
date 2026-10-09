@@ -213,7 +213,8 @@ Repository
                  no-op if the record is pending/running for the same or newer target_version;
                  otherwise (re)sets it to pending with attempts = 0
               · claim_next_job(now, lease_s)  atomic: picks a pending job (or a running one whose
-                 lease_until < now) with not_before ≤ now, learn/questions/image before topup,
+                 lease_until < now) with not_before ≤ now, by kind image → questions → learn → topup
+                 (finish words already under way before starting new ones), oldest first within a kind,
                  sets running + lease_until
               · get_job(key)
               · finish_job(key) · fail_job(key, error, retry_at | None)  (consumes an attempt)
