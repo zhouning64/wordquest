@@ -76,6 +76,16 @@ test("summarizeHome plans only what the session can hold (capacity = max(10, 2 Ã
   assert.equal(long.startLabel, "5 reviews + 27 new");
 });
 
+test("summarizeHome shows how many shaky words one practice session holds", () => {
+  // 72 shaky words; a 15-minute practice holds 30, a 30-minute one 60 (capacity = max(10, 2 Ã— minutes)).
+  const short = summarizeHome({ practice_eligible: 72, profile: { session_minutes: 15 } });
+  assert.equal(short.practiceEligible, 72, "the button only shows when there are shaky words");
+  assert.equal(short.practiceWords, 30);
+  const long = summarizeHome({ practice_eligible: 72, profile: { session_minutes: 30 } });
+  assert.equal(long.practiceWords, 60);
+  assert.equal(summarizeHome({ practice_eligible: 4, profile: { session_minutes: 30 } }).practiceWords, 4);
+});
+
 test("summarizeHome defaults new-per-session to 5 and handles an empty home", () => {
   assert.equal(summarizeHome({ due_today: 0, ready_new: 24 }).startLabel, "0 reviews + 5 new");
   const empty = summarizeHome({});

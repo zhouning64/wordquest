@@ -1,6 +1,7 @@
 """Time helpers. The only place that produces UTC timestamps ("...Z") and does local-date arithmetic."""
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta, timezone
 
 
@@ -24,11 +25,16 @@ def utc_now_iso() -> str:
     return iso(utc_now())
 
 
+_FRACTION = re.compile(r"(T\d{2}:\d{2}:\d{2})\.(\d{1,6})(?=[+-]|$)")
+
+
 def parse_iso(s: str) -> datetime:
-    """Parse iso() output (also accepts fractional seconds and +HH:MM offsets). Returns aware UTC."""
+    """Parse iso() output (also accepts 1–6 fractional-second digits and +HH:MM offsets). Returns aware UTC."""
     text = s.strip()
     if text.endswith(("Z", "z")):
         text = text[:-1] + "+00:00"
+    # Python 3.10's fromisoformat takes exactly 3 or 6 fraction digits; the learner API accepts 1–6.
+    text = _FRACTION.sub(lambda m: f"{m.group(1)}.{m.group(2).ljust(6, '0')}", text)
     return _as_utc(datetime.fromisoformat(text))
 
 

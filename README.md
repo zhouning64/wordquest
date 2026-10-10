@@ -7,7 +7,8 @@ questions for every word, pitched to the learner's grade band (grades 3–5, 6�
 checked by code and by a second, blind AI pass before a learner sees it. Learners answer varied questions; a wrong
 answer (or "I'm not sure") opens the Learn page — picture, meanings, memory hook, example sentences — followed by a
 quick 3-question "lock it in" check. Words come back on a spaced-repetition schedule across days, and stars show
-how well each word is known.
+how well each word is known. Extra practice counts too: a word's stars can change up to 3 times a day, at least 2 hours
+apart, in regular or practice sessions.
 
 - Runs locally: one Python process (FastAPI + SQLite + a local pictures folder). No cloud account is needed
   except a Cerebras API key for generating new words.

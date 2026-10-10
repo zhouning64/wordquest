@@ -350,6 +350,27 @@ def test_export_import_round_trip_replaces_data_and_clears_jobs(repo, tmp_path):
     other.close()
 
 
+def test_progress_daily_count_fields_load_from_old_backups_and_round_trip(repo, tmp_path):
+    populate(repo)
+    exported = json.loads(json.dumps(repo.export_all()))
+    row = next(x for x in exported["progress"] if x["word"] == "brave")
+    assert (row["graded_today"], row["last_graded_at"]) == (0, None)
+    # A backup written before these fields existed still imports, with the defaults.
+    old = json.loads(json.dumps(exported))
+    for x in old["progress"]:
+        del x["graded_today"], x["last_graded_at"]
+    other = SqliteRepository(tmp_path / "other.db")
+    other.import_all(old)
+    assert other.export_all() == exported
+    # Set values survive export → import.
+    row.update(last_graded_on="2026-10-07", graded_today=2, last_graded_at="2026-10-07T17:00:00.250Z")
+    other.import_all(exported)
+    brave = other.get_progress("p1", ["brave"])["brave"]
+    assert (brave.graded_today, brave.last_graded_at) == (2, "2026-10-07T17:00:00.250Z")
+    assert other.export_all() == exported
+    other.close()
+
+
 @pytest.mark.parametrize("mutate, message", [
     (lambda d: d.update(format="something-else"), "format"),
     (lambda d: d.update(version=2), "version"),

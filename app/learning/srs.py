@@ -1,6 +1,8 @@
 """Spaced-repetition rules (spec §8.5). Pure functions over WordProgress / Session."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from app import clock
 from app.models import AnswerEvent, Session, WordProgress
 
@@ -9,11 +11,54 @@ SEEN_IDS_CAP = 60
 MAX_STAGE = 5
 MASTERED_MIN_INTERVAL = 30
 MASTERED_MAX_INTERVAL = 60
+MAX_COUNTED_PER_DAY = 3         # stage-changing ("counted") answers per word per learner local date
+MIN_HOURS_BETWEEN_COUNTED = 2   # between a word's counted answers, measured with the events' `at` (UTC)
+COUNTING_MODES = ("normal", "practice")
+_MIN_GAP_MS = MIN_HOURS_BETWEEN_COUNTED * 3_600_000
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
-def is_stage_changing(p: WordProgress, local_date: str, mode: str) -> bool:
-    """Only the first graded answer of a learner day, in a normal session, moves the stage."""
-    return mode == "normal" and (p.last_graded_on is None or local_date > p.last_graded_on)
+def _epoch_ms(at: str | None) -> int | None:
+    """Whole milliseconds since the epoch (the precision of web/js/srs.js), or None if missing or unparseable."""
+    if not at:
+        return None
+    try:
+        return (clock.parse_iso(at) - _EPOCH) // timedelta(milliseconds=1)
+    except ValueError:
+        return None
+
+
+def counted_on(p: WordProgress, local_date: str) -> int:
+    """The word's counted answers on local_date. A row graded that day before last_graded_at existed (pre-upgrade)
+    has graded_today 0 and no last_graded_at: it counts as one answer, with the 2-hour gap already satisfied."""
+    if p.last_graded_on != local_date:
+        return 0
+    if p.last_graded_at is None:
+        return max(1, p.graded_today)
+    return p.graded_today
+
+
+def is_out_of_order(p: WordProgress, local_date: str, at: str) -> bool:
+    """Dated before the word's last counted answer, by learner date or by `at`: such an answer updates counts only."""
+    if p.last_graded_on is not None and local_date < p.last_graded_on:
+        return True
+    last, now = _epoch_ms(p.last_graded_at), _epoch_ms(at)
+    return last is not None and now is not None and now < last
+
+
+def is_stage_changing(p: WordProgress, local_date: str, mode: str, at: str) -> bool:
+    """A graded answer is counted when: the session is normal or practice; it is not out of order; the word has fewer
+    than MAX_COUNTED_PER_DAY counted answers on local_date; and MIN_HOURS_BETWEEN_COUNTED have passed since its last
+    counted answer (even across midnight). An answer whose `at` cannot be read is not counted."""
+    if mode not in COUNTING_MODES or is_out_of_order(p, local_date, at):
+        return False
+    if counted_on(p, local_date) >= MAX_COUNTED_PER_DAY:
+        return False
+    now = _epoch_ms(at)
+    if now is None:
+        return False
+    last = _epoch_ms(p.last_graded_at)
+    return last is None or now - last >= _MIN_GAP_MS
 
 
 def apply_intro(p: WordProgress, local_date: str) -> None:
@@ -30,6 +75,7 @@ def apply_graded(
     correct: bool,
     unsure: bool,
     local_date: str,
+    at: str,
     mode: str,
     question_id: str | None,
 ) -> bool:
@@ -45,10 +91,10 @@ def apply_graded(
     if question_id:
         p.seen_question_ids = (list(p.seen_question_ids) + [question_id])[-SEEN_IDS_CAP:]
 
-    if local_date < (p.last_graded_on or ""):
-        return False  # out-of-order event from an earlier learner day: counts only
+    if is_out_of_order(p, local_date, at):
+        return False  # dated before the last counted answer: counts only
 
-    if is_stage_changing(p, local_date, mode):
+    if is_stage_changing(p, local_date, mode, at):
         before = p.stage
         if not miss:
             p.stage = min(MAX_STAGE, before + 1)
@@ -60,7 +106,9 @@ def apply_graded(
             p.stage = 0 if before == 0 else max(1, before - 2)
             p.interval_days = 1
         p.due_date = clock.add_days(local_date, p.interval_days)
+        p.graded_today = counted_on(p, local_date) + 1  # before last_graded_on moves: a new date starts at 1
         p.last_graded_on = local_date
+        p.last_graded_at = at
         return p.stage > before
 
     if mode == "practice" and miss:
@@ -106,6 +154,7 @@ def apply_events_to_state(session: Session, progress: dict[str, WordProgress], e
                 correct=is_correct,
                 unsure=is_unsure,
                 local_date=e.local_date,
+                at=e.at,
                 mode=session.mode,
                 question_id=e.question_id,
             )

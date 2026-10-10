@@ -154,6 +154,8 @@ class WordProgress(BaseModel):
     interval_days: int = 0
     introduced_on: str | None = None
     last_graded_on: str | None = None
+    graded_today: int = 0                  # counted (stage-changing) answers on last_graded_on (§8.5)
+    last_graded_at: str | None = None      # UTC `at` of the last counted answer; None in rows written before it existed
     seen: int = 0
     correct: int = 0
     wrong: int = 0

@@ -465,6 +465,42 @@ def test_two_devices_answering_the_same_word_on_the_same_day(env):
     assert (mac_session.answered, mac_session.stars_up, mac_session.missed) == (1, [], ["candid"])
 
 
+def test_practice_answers_count_up_to_3_a_day_at_least_2_hours_apart(env):
+    """Extra practice sessions earn (and lose) stars, but a word counts at most 3 answers a day, 2 hours apart."""
+    add_word(env.repo, "candid")
+    add_profile(env.repo, "p1", "Ava", [["candid"]])
+    set_progress(env.repo, "p1", {"candid": {"stage": 1, "due_date": "2026-10-20", "interval_days": 1,
+                                             "introduced_on": "2026-10-01", "last_graded_on": "2026-10-05"}})
+
+    def practice(cid: str, at: str, correct: bool = True) -> tuple[dict, list[str]]:
+        data = start(env, mode="practice")
+        event = ev(cid, "candid", "answer", correct=correct, question=question_for(data, "candid"), at=at)
+        r = env.client.post(f"/api/sessions/{data['session_id']}/events", json={"events": [event]})
+        assert r.status_code == 200, r.text
+        return data["words"]["candid"], env.repo.get_session(data["session_id"]).stars_up
+
+    def stored() -> tuple:
+        p = env.repo.get_progress("p1", ["candid"])["candid"]
+        return p.stage, p.graded_today, p.last_graded_at, p.due_date
+
+    entry, up = practice("prac-0001", "2026-10-07T08:00:00.000Z")
+    assert (entry["stage"], entry["graded_today"], entry["last_graded_at"]) == (1, 0, None)
+    assert (stored(), up) == ((2, 1, "2026-10-07T08:00:00.000Z", "2026-10-10"), ["candid"])
+
+    entry, up = practice("prac-0002", "2026-10-07T09:30:00.000Z")  # 90 minutes later: not counted
+    assert (entry["stage"], entry["graded_today"], entry["last_graded_at"]) == (2, 1, "2026-10-07T08:00:00.000Z")
+    assert (stored(), up) == ((2, 1, "2026-10-07T08:00:00.000Z", "2026-10-10"), [])
+
+    _, up = practice("prac-0003", "2026-10-07T10:00:00.000Z")  # 2 hours after the first: counted
+    assert (stored(), up) == ((3, 2, "2026-10-07T10:00:00.000Z", "2026-10-14"), ["candid"])
+
+    _, up = practice("prac-0004", "2026-10-07T12:30:00.000Z", correct=False)  # third counted: a miss drops 3 → 1
+    assert (stored(), up) == ((1, 3, "2026-10-07T12:30:00.000Z", "2026-10-08"), [])
+
+    _, up = practice("prac-0005", "2026-10-07T18:00:00.000Z")  # fourth that day: not counted
+    assert (stored(), up) == ((1, 3, "2026-10-07T12:30:00.000Z", "2026-10-08"), [])
+
+
 def test_event_errors(five_new_words):
     env = five_new_words
     r = env.client.post("/api/sessions/nope/events", json={"events": []})
