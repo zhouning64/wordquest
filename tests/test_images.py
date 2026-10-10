@@ -12,7 +12,7 @@ from PIL import Image
 import app.ai.images as images_pkg
 from app.ai.images import make_image_provider
 from app.ai.images.base import ImageProvider
-from app.ai.images.openai_compatible import MAX_IMAGE_BYTES, OpenAICompatibleImageProvider
+from app.ai.images.openai_compatible import DOWNLOAD_NOT_READY_DELAYS_S, MAX_IMAGE_BYTES, OpenAICompatibleImageProvider
 from app.ai.images.process import STYLE_PREAMBLE, build_image_prompt, image_key, to_webp
 from app.ai.llm import DailyCapReached, LLMError, RateLimited, TransientError
 from app.config import Settings
@@ -129,14 +129,63 @@ async def test_base_provider_aclose_is_a_no_op():
 # ---------------------------------------------------------------- OpenAICompatibleImageProvider
 
 
-def provider(handler, *, key: str = "sk-img-test-1234", on_request=None) -> OpenAICompatibleImageProvider:
+def provider(handler, *, key: str = "sk-img-test-1234", on_request=None,
+             not_ready_delays_s: tuple[float, ...] = (0, 0, 0, 0)) -> OpenAICompatibleImageProvider:
     return OpenAICompatibleImageProvider(
         api_key=key,
         model="img-model",
         base_url="https://img.example/v1/",
         on_request=on_request,
         transport=httpx.MockTransport(handler),
+        not_ready_delays_s=not_ready_delays_s,
     )
+
+
+async def test_download_404_right_after_generation_is_retried_without_a_new_picture():
+    """z.ai answers 404 {"ErrMsg":"file not exist"} for a few seconds after it made the picture. The same link is
+    downloaded again after a short wait; the picture is not generated (and paid for) again."""
+    png = png_bytes((40, 40))
+    methods: list[str] = []
+    requests_counted: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.method == "POST":
+            return httpx.Response(200, json={"data": [{"url": "https://cdn.example/out/fox.png"}]})
+        if methods.count("GET") <= 2:
+            return httpx.Response(404, json={"RetCode": -148654, "ErrMsg": "file not exist"})
+        return httpx.Response(200, content=png)
+
+    p = provider(handler, on_request=lambda: requests_counted.append(1))
+    try:
+        assert await p.generate("x") == png
+    finally:
+        await p.aclose()
+    assert methods == ["POST", "GET", "GET", "GET"]
+    assert len(requests_counted) == 1  # one picture made and counted
+
+
+async def test_download_404_that_never_clears_fails_after_the_retries():
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.method == "POST":
+            return httpx.Response(200, json={"data": [{"url": "https://cdn.example/out/fox.png"}]})
+        return httpx.Response(404, json={"RetCode": -148654, "ErrMsg": "file not exist"})
+
+    p = provider(handler, not_ready_delays_s=(0, 0, 0))
+    try:
+        with pytest.raises(LLMError, match="image download HTTP 404"):
+            await p.generate("x")
+    finally:
+        await p.aclose()
+    assert methods == ["POST", "GET", "GET", "GET", "GET"]  # first try + one per delay
+
+
+async def test_default_not_ready_waits_are_short_and_bounded():
+    assert DOWNLOAD_NOT_READY_DELAYS_S == (2, 4, 8, 16)
+    assert sum(DOWNLOAD_NOT_READY_DELAYS_S) <= 30
 
 
 async def test_provider_request_shape_and_decoding():
