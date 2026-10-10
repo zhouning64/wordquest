@@ -404,11 +404,15 @@ def test_practice_mode_selection():
     assert intro_words(payload) == []
 
 
-def test_practice_mode_caps_at_12_and_capacity():
-    words = [f"p{i:02d}" for i in range(15)]
+def test_practice_mode_fills_the_session_length():
+    # Practice holds as many words as a session of the profile's length (capacity = max(10, 2 × minutes)).
+    words = [f"p{i:02d}" for i in range(80)]
     progress = [prog(w, 2, "2026-10-20") for w in words]
-    assert len(build_session(inputs(words, progress=progress, mode="practice", minutes=15))["queue"]) == 12
+    assert len(build_session(inputs(words, progress=progress, mode="practice", minutes=30))["queue"]) == 60
+    assert len(build_session(inputs(words, progress=progress, mode="practice", minutes=15))["queue"]) == 30
     assert len(build_session(inputs(words, progress=progress, mode="practice", minutes=5))["queue"]) == 10
+    few = words[:15]
+    assert len(build_session(inputs(few, progress=progress[:15], mode="practice", minutes=30))["queue"]) == 15
 
 
 def test_practice_mode_skips_words_that_are_not_ready():

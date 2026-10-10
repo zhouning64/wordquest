@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from app.models import Profile, Question, WordContent, WordProgress
 
-PRACTICE_MAX_WORDS = 12
 RESERVE_TIERS = (1, 2)
 CHECK_SET_SIZE = 3
 MAX_REASKS = 2
@@ -66,7 +65,7 @@ def _select_words(inp: SessionInputs) -> tuple[list[str], list[str]]:
     if inp.mode == "practice":
         words = [w for w in ready if w in prog and 1 <= prog[w].stage <= 3]
         words.sort(key=lambda w: (prog[w].stage, -prog[w].wrong))
-        return words[: min(PRACTICE_MAX_WORDS, cap)], []
+        return words[:cap], []  # practice fills a session of the profile's length, weakest first
     reviews = [
         w for w in ready
         if w in prog and prog[w].due_date is not None and prog[w].due_date <= inp.local_date

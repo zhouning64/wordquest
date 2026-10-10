@@ -36,6 +36,7 @@ export function summarizeHome(home) {
     readyNew,
     plannedNew,
     practiceEligible: num(hm.practice_eligible),
+    practiceWords: Math.min(num(hm.practice_eligible), cap),  // a practice session holds up to `cap` words
     preparing,
     startLabel,
   };
@@ -88,7 +89,7 @@ export async function render(root, ctx) {
     "▶ Start session", h("span", { class: "btn-sub" }, s.startLabel));
   const practiceBtn = s.practiceEligible > 0
     ? h("button", { class: "btn btn-secondary", type: "button", onclick: () => start("practice") },
-        "🔁 Practice shaky words", h("span", { class: "btn-sub" }, plural(s.practiceEligible, "word", "words")))
+        "🔁 Practice shaky words", h("span", { class: "btn-sub" }, plural(s.practiceWords, "word", "words")))
     : null;
 
   async function start(mode) {
