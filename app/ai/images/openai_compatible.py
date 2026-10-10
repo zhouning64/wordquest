@@ -15,9 +15,16 @@ from app.security import redact
 DEFAULT_SIZE = "1024x1024"  # valid for both z.ai models (glm-image and cogview-4-250304)
 MAX_IMAGE_MB = 20
 MAX_IMAGE_BYTES = MAX_IMAGE_MB * 1024 * 1024  # larger downloaded or decoded pictures are refused
+# z.ai answers 404 {"ErrMsg": "file not exist"} for a few seconds after it made a picture. The same link is fetched
+# again after these waits (seconds) instead of failing the job, which would generate and pay for a new picture.
+DOWNLOAD_NOT_READY_DELAYS_S: tuple[float, ...] = (2, 4, 8, 16)
 # Bytes read from a failed download's body. Read well past the 300 characters kept in the message, so a secret
 # that straddles the cut is whole when redacted (the message is cut only after redaction).
 _ERROR_BODY_READ_BYTES = 4096
+
+
+class _NotReadyYet(Exception):
+    """The picture's download link answered 404 while a retry is still allowed."""
 
 
 class OpenAICompatibleImageProvider(ImageProvider):
@@ -47,7 +54,9 @@ class OpenAICompatibleImageProvider(ImageProvider):
         timeout_s: float = 120.0,
         on_request: Callable[[], None] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        not_ready_delays_s: tuple[float, ...] = DOWNLOAD_NOT_READY_DELAYS_S,
     ) -> None:
+        self._not_ready_delays_s = tuple(not_ready_delays_s)
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.size = size.strip()
@@ -99,9 +108,19 @@ class OpenAICompatibleImageProvider(ImageProvider):
         and reading stops as soon as the body passes MAX_IMAGE_BYTES."""
         if not isinstance(url, str) or not url.startswith(("https://", "http://")):
             raise LLMError("image provider returned an unusable image url")
+        for wait_s in self._not_ready_delays_s:
+            try:
+                return await self._download_once(url, not_found_is_final=False)
+            except _NotReadyYet:
+                await asyncio.sleep(wait_s)
+        return await self._download_once(url, not_found_is_final=True)
+
+    async def _download_once(self, url: str, *, not_found_is_final: bool) -> bytes:
         too_large = f"image download is larger than {MAX_IMAGE_MB} MB"
         try:
             async with self._client.stream("GET", url, follow_redirects=True) as resp:
+                if resp.status_code == 404 and not not_found_is_final:
+                    raise _NotReadyYet
                 if not resp.is_success:
                     head = await _read_at_most(resp, _ERROR_BODY_READ_BYTES)
                     _raise_for_status(resp, "image download", head.decode("utf-8", errors="replace"))

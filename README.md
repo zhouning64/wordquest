@@ -214,7 +214,9 @@ prices on z.ai before making many pictures:
   or `hd` (more detail).
 
 z.ai answers with a temporary link that expires after 30 days, so WordQuest downloads every picture right away
-(without sending the API key to the download host; anything over 20 MB is refused) and stores it as a WebP file in
+(without sending the API key to the download host; anything over 20 MB is refused; if the link is not ready yet —
+z.ai sometimes answers "file not exist" for a few seconds — it waits and fetches the same link again for up to about
+30 seconds instead of paying for a new picture) and stores it as a WebP file in
 `data/images/` — nothing depends on the link afterwards. Pictures are made once per word, grade band and content
 version, and every picture request counts toward `AI_DAILY_CALL_LIMIT`. If a picture fails, learners see the emoji
 scene; the word's row in the Parent area shows "🖼 failed" with the reason underneath (Preview shows it too, for
