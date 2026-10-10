@@ -246,6 +246,8 @@ def build_session(inp: SessionInputs) -> dict:
             "source": c.source,
             "stage": p.stage if p else 0,
             "last_graded_on": p.last_graded_on if p else None,
+            "graded_today": p.graded_today if p else 0,
+            "last_graded_at": p.last_graded_at if p else None,
             "reserves": {
                 "reasks": [q.public() for q in reasks],
                 "checks": [[q.public() for q in set1], [q.public() for q in set2]],

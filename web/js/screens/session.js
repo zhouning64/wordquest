@@ -133,9 +133,10 @@ export function render(root, ctx) {
     mountQuestion(body, q, {
       label: item.reask ? `${TYPE_LABEL[q.type] || q.type} · again` : undefined,
       onAnswered: (r, fb) => {
-        const res = engine.answerQuestion(r.correct, r.unsure);
+        const at = new Date().toISOString();   // one timestamp for the displayed stars and the event (§8.5)
+        const res = engine.answerQuestion(r.correct, r.unsure, at);
         logEvent(r.unsure ? "unsure" : "answer", item.word, {
-          question_id: q.id, question_type: q.type, correct: r.unsure ? false : r.correct, ms: res.ms,
+          question_id: q.id, question_type: q.type, correct: r.unsure ? false : r.correct, ms: res.ms, at,
         });
         if (r.unsure) {
           openLearn(item.word, { kind: "answer", answer: r.answerText, explanation: q.explanation });

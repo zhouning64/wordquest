@@ -105,7 +105,10 @@ export class SessionEngine {
     this.shownAt = now();
     this.wordState = {};
     for (const [w, d] of Object.entries(this.words)) {
-      this.wordState[w] = { stage: d.stage ?? 0, due_date: null, interval_days: 0, last_graded_on: d.last_graded_on ?? null };
+      this.wordState[w] = {
+        stage: d.stage ?? 0, due_date: null, interval_days: 0, last_graded_on: d.last_graded_on ?? null,
+        graded_today: d.graded_today ?? 0, last_graded_at: d.last_graded_at ?? null,
+      };
     }
     this.reasksUsed = {};
     this.checkAttempts = {};
@@ -154,7 +157,9 @@ export class SessionEngine {
     this._enter();
   }
 
-  answerQuestion(correct, unsure = false) {
+  // `at` is the answer's UTC ISO time; the caller passes the same value it puts on the event, so the displayed
+  // stars follow the server's 2-hour rule (spec §8.5). Defaults to the engine clock.
+  answerQuestion(correct, unsure = false, at = new Date(this.now()).toISOString()) {
     const item = this.current();
     if (!item || item.kind !== "question") throw new Error("current item is not a question");
     // A double tap or a repeated Enter on the same item is ignored: nothing is recorded twice.
@@ -167,7 +172,7 @@ export class SessionEngine {
     if (ok) this.counts.correct += 1;
     if (unsure) this.counts.unsure += 1;
     const before = this.wordState[word] || { stage: 0, due_date: null, interval_days: 0, last_graded_on: null };
-    const { state, stageUp } = applyGraded(before, { correct: ok, unsure: Boolean(unsure), localDate: this.localDate, mode: this.mode });
+    const { state, stageUp } = applyGraded(before, { correct: ok, unsure: Boolean(unsure), localDate: this.localDate, at, mode: this.mode });
     this.wordState[word] = state;
     if (stageUp && !this.starsUp.includes(word)) this.starsUp.push(word);
     let reaskInserted = false;

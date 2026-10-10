@@ -7,13 +7,15 @@ import { seededRng } from "../../web/js/ui.js";
 
 const TODAY = "2026-10-07";
 const YESTERDAY = "2026-10-06";
+const T15 = Date.parse("2026-10-07T15:00:00.000Z");   // an engine clock on TODAY
+const HOUR = 3_600_000;
 
 const q = (id, word, type = "meaning") => ({
   id, type, tier: 1, prompt: `Question ${id} about ___`, choices: ["a", "b", "c", "d"],
   answer_index: 0, accepted_answers: [], explanation: `because ${id}`,
 });
 
-function wordData(word, { stage = 0, last = null, reasks = 2, checks = [3, 3] } = {}) {
+function wordData(word, { stage = 0, last = null, count = 0, lastAt = null, reasks = 2, checks = [3, 3] } = {}) {
   return {
     card: {
       pos: "adjective", forms: [], short_def: `${word} def`, kid_def: "", senses: [], examples: [],
@@ -24,6 +26,8 @@ function wordData(word, { stage = 0, last = null, reasks = 2, checks = [3, 3] } 
     source: "ai",
     stage,
     last_graded_on: last,
+    graded_today: count,
+    last_graded_at: lastAt,
     reserves: {
       reasks: Array.from({ length: reasks }, (_, i) => q(`${word}-r${i + 1}`, word)),
       checks: checks.map((n, s) => Array.from({ length: n }, (_, i) => q(`${word}-c${s + 1}${i + 1}`, word))),
@@ -210,20 +214,20 @@ test("second check fail cancels the word's pending re-asks and blocks new ones",
   assert.equal(e.canCheck("a"), false);
 });
 
-test("stars change only on the word's first graded answer today in a normal session", () => {
+test("stars change only on counted answers: not a re-ask minutes later, not a word counted < 2 h ago", () => {
   const e = new SessionEngine(payload({
     queue: [qi("a"), qi("a", "a-2"), qi("b"), qi("c")],
     words: {
       a: wordData("a", { stage: 1, last: YESTERDAY }),
-      b: wordData("b", { stage: 2, last: TODAY }),
+      b: wordData("b", { stage: 2, last: TODAY, count: 1, lastAt: "2026-10-07T14:00:00.000Z" }),
       c: wordData("c", { stage: 4, last: YESTERDAY }),
     },
-  }));
+  }), { now: () => T15 });
   assert.deepEqual(pickStars(e.answerQuestion(true)), { stageUp: true, stars: 2 });
   e.advance();
   assert.deepEqual(pickStars(e.answerQuestion(true)), { stageUp: false, stars: 2 });
   e.advance();
-  assert.deepEqual(pickStars(e.answerQuestion(true)), { stageUp: false, stars: 2 }, "already graded today");
+  assert.deepEqual(pickStars(e.answerQuestion(true)), { stageUp: false, stars: 2 }, "counted 1 h ago");
   e.advance();
   assert.deepEqual(pickStars(e.answerQuestion(false)), { stageUp: false, stars: 2 }, "miss drops 4 → 2");
   assert.deepEqual(e.stats().starsUp, ["a"]);
@@ -261,16 +265,42 @@ test("a new word (no progress) goes 0 → 1 star on its first correct answer", (
   assert.deepEqual(pickStars(e.answerQuestion(true)), { stageUp: true, stars: 1 });
 });
 
-test("practice sessions never change stars", () => {
+test("practice answers change stars when counted (at most 3 a day, at least 2 hours apart)", () => {
   const e = new SessionEngine(payload({
     mode: "practice",
-    queue: [qi("a"), qi("b")],
-    words: { a: wordData("a", { stage: 2, last: YESTERDAY }), b: wordData("b", { stage: 3, last: YESTERDAY }) },
-  }));
-  assert.deepEqual(pickStars(e.answerQuestion(true)), { stageUp: false, stars: 2 });
+    queue: [qi("a"), qi("b"), qi("c"), qi("d")],
+    words: {
+      a: wordData("a", { stage: 2, last: YESTERDAY }),
+      b: wordData("b", { stage: 3, last: YESTERDAY }),
+      c: wordData("c", { stage: 2, last: TODAY, count: 1, lastAt: "2026-10-07T14:00:00.000Z" }),
+      d: wordData("d", { stage: 1, last: TODAY, count: 3, lastAt: "2026-10-07T09:00:00.000Z" }),
+    },
+  }), { now: () => T15 });
+  assert.deepEqual(pickStars(e.answerQuestion(true)), { stageUp: true, stars: 3 });
   e.advance();
-  assert.deepEqual(pickStars(e.answerQuestion(false)), { stageUp: false, stars: 3 });
-  assert.deepEqual(e.stats().starsUp, []);
+  assert.deepEqual(pickStars(e.answerQuestion(false)), { stageUp: false, stars: 1 }, "a counted practice miss drops 3 → 1");
+  e.advance();
+  assert.deepEqual(pickStars(e.answerQuestion(true)), { stageUp: false, stars: 2 }, "c was counted 1 h ago");
+  e.advance();
+  assert.deepEqual(pickStars(e.answerQuestion(true)), { stageUp: false, stars: 1 }, "d already counted 3 times today");
+  assert.deepEqual(e.stats().starsUp, ["a"]);
+});
+
+test("answerQuestion applies the 2-hour rule with the given at, or the engine clock when none is given", () => {
+  let t = T15;
+  const e = new SessionEngine(payload({
+    queue: [qi("a"), qi("a", "a-2"), qi("a", "a-3")],
+    words: { a: wordData("a", { stage: 1, last: YESTERDAY }) },
+  }), { now: () => t });
+  assert.deepEqual(pickStars(e.answerQuestion(true)), { stageUp: true, stars: 2 });
+  assert.equal(e.wordState.a.last_graded_at, "2026-10-07T15:00:00.000Z");
+  e.advance();
+  t += HOUR;
+  assert.deepEqual(pickStars(e.answerQuestion(true)), { stageUp: false, stars: 2 }, "1 h later");
+  e.advance();
+  assert.deepEqual(pickStars(e.answerQuestion(true, false, "2026-10-07T17:00:00.000Z")), { stageUp: true, stars: 3 });
+  assert.equal(e.wordState.a.graded_today, 2);
+  assert.equal(e.wordState.a.last_graded_at, "2026-10-07T17:00:00.000Z");
 });
 
 test("check results never change stars", () => {
@@ -294,12 +324,12 @@ test("stats: accuracy and up to 5 keep-practicing words, lowest stars first", ()
   const words = {};
   const queue = [];
   [3, 1, 4, 2, 5, 3].forEach((stage, i) => {
-    words[`m${i}`] = wordData(`m${i}`, { stage, last: TODAY, reasks: 0, checks: [0, 0] });
+    words[`m${i}`] = wordData(`m${i}`, { stage, last: TODAY, count: 1, lastAt: "2026-10-07T14:30:00.000Z", reasks: 0, checks: [0, 0] });
     queue.push(qi(`m${i}`));
   });
   words.ok = wordData("ok", { reasks: 0, checks: [0, 0] });
   queue.push(qi("ok"));
-  const e = new SessionEngine(payload({ queue, words }));
+  const e = new SessionEngine(payload({ queue, words }), { now: () => T15 });
   for (let i = 0; i < 6; i++) { e.answerQuestion(false); e.advance(); }
   e.answerQuestion(true);
   const s = e.stats();
