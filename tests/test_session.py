@@ -606,7 +606,8 @@ def test_reserves_when_tier_1_2_pool_is_smaller_than_a_set():
 def test_payload_shape():
     words = ["brave", "calm"]
     contents = {"brave": content("brave", image_key="images/6-8/brave-v1.webp", source="legacy"), "calm": content("calm")}
-    progress = [prog("brave", 3, TODAY, last="2026-10-01")]
+    progress = [prog("brave", 3, TODAY, last="2026-10-01").model_copy(
+        update={"graded_today": 2, "last_graded_at": "2026-10-01T18:00:00Z"})]
     payload = build_session(inputs(words, progress=progress, contents=contents, minutes=20))
     json.dumps(payload)  # JSON-serializable
     assert set(payload) == {"mode", "local_date", "settings", "queue", "words", "empty_reason", "preparing"}
@@ -624,13 +625,17 @@ def test_payload_shape():
             assert set(it["question"]) == PUBLIC_KEYS
     assert list(payload["words"]) == list(dict.fromkeys(it["word"] for it in payload["queue"]))
     for w, entry in payload["words"].items():
-        assert set(entry) == {"card", "image_key", "source", "stage", "last_graded_on", "reserves"}
+        assert set(entry) == {"card", "image_key", "source", "stage", "last_graded_on", "graded_today",
+                              "last_graded_at", "reserves"}
         assert entry["card"] == contents[w].card.model_dump(mode="json")
         assert set(entry["reserves"]) == {"reasks", "checks"}
         assert len(entry["reserves"]["checks"]) == 2
     b, c = payload["words"]["brave"], payload["words"]["calm"]
     assert (b["image_key"], b["source"], b["stage"], b["last_graded_on"]) == ("images/6-8/brave-v1.webp", "legacy", 3, "2026-10-01")
     assert (c["image_key"], c["source"], c["stage"], c["last_graded_on"]) == (None, "ai", 0, None)
+    # the browser's star mirror (web/js/srs.js) needs the daily count and the last counted time
+    assert (b["graded_today"], b["last_graded_at"]) == (2, "2026-10-01T18:00:00Z")
+    assert (c["graded_today"], c["last_graded_at"]) == (0, None)
     assert payload["empty_reason"] is None
     assert payload["preparing"] == {"ready": 2, "total": 2}
 

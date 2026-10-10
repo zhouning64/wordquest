@@ -162,7 +162,7 @@ IDs are short random strings (`uuid4().hex[:12]`). Composite keys are formatted 
 `word`, `band`, `content_version`, `type` (§8.2), `tier` (1–3, derived from type), `prompt` (may contain one `___`), `choices` (exactly 4 for choice types; `[]` for `spell_it`), `answer_index` (0–3 for choice types; `-1` for `spell_it`), `accepted_answers` (normalized forms for `spell_it`; `[]` otherwise), `explanation` (≤ 160 chars), `source` (`ai` | `legacy`), `verified` (bool), `created_at`. Pool cap: 40 questions per word × band × version. "Choice types" = every type except `spell_it`.
 
 **WordProgress** — key `"{profile_id}:{word}"`
-`stage` (0–5; displayed as stars), `due_date` (local date or null), `interval_days`, `introduced_on`, `last_graded_on` (local date of the last stage-changing answer), `seen` / `correct` / `wrong` / `unsure` counts, `seen_question_ids` (most recent 60), `updated_at`.
+`stage` (0–5; displayed as stars), `due_date` (local date or null), `interval_days`, `introduced_on`, `last_graded_on` (local date of the last stage-changing answer), `graded_today` (stage-changing answers on `last_graded_on`), `last_graded_at` (UTC `at` of the last stage-changing answer), `seen` / `correct` / `wrong` / `unsure` counts, `seen_question_ids` (most recent 60), `updated_at`.
 
 **Session** — key `id`
 `profile_id`, `mode` (`normal` | `practice`), `local_date`, `started_at`, `finished_at`, `planned_minutes`, `active_minutes`, `answered`, `correct`, `unsure`, `new_words` (list), `stars_up` (list of words), `learn_opened` (count), `checks_passed` / `checks_failed`.
@@ -345,11 +345,11 @@ Inputs: profile, `mode`, learner `local_date`. Only words in the profile's **cur
 - **Capacity** `C = max(10, 2 × session_minutes)` items.
 - **Reviews:** eligible words with progress where `due_date ≤ local_date` and content `ready`, sorted by `due_date` ascending, then `stage` ascending.
 - **New words (normal mode only):** eligible words (list order, then word order) with no progress and content `ready`; take `new_words_per_session`, reduced to `0` if reviews alone ≥ `C`, else to `min(new_words_per_session, floor((C − reviews)/2))`.
-- **Practice mode:** eligible words with stage 1–3, ordered by stage ascending then `wrong` descending; at most 12; no new words. Practice answers never change stars (§8.5).
+- **Practice mode:** eligible words with stage 1–3, ordered by stage ascending then `wrong` descending; at most 12; no new words. Practice answers change stars under the same daily limits as normal ones (§8.5), so a word still needs its scheduled review to go 4 → 5.
 - **Queue:** each review contributes one `question` item; each new word contributes an `intro` item, spread among the reviews (all intros first when there are none). New words' first `question` items form one block at the end of the queue, in intro order; a new word keeps its question only if **≥ 4 other items** sit between its intro and that question (`MIN_ITEMS_BETWEEN_INTRO_AND_QUESTION`), so it is not answered from short-term memory. A word that is too close gets its intro only (no question, empty reserves): `intro_seen` makes it stage 0, due today, so it is first quizzed in a later session. Word selection already fits `C`, so nothing is truncated.
 - **Main question per item:** choose the tier from the word's stage (§8.2); prefer verified questions not in `seen_question_ids`; if none unseen in that tier, use the adjacent tier; if still none, the least-recently-seen question in any tier.
 - **Reserves per session word** (so the browser never needs another round trip), drawn from **tiers 1–2**: 2 lock-in sets of 3 questions each (each set spanning ≥ 2 types) and up to 2 re-ask questions. Priority when the pool is too small for everything to be distinct: (1) no lock-in question repeats the main question; (2) the two lock-in sets are disjoint; (3) re-asks are distinct from all of the above — re-asks are dropped first (a dropped re-ask reuses a lock-in question the learner has not yet seen, or is skipped).
-- **Payload:** the ordered queue; for each word its Learn card, image URL, current `stage`, `last_graded_on`, and reserves; profile settings (timer, break reminder).
+- **Payload:** the ordered queue; for each word its Learn card, image URL, current `stage`, `last_graded_on`, `graded_today`, `last_graded_at`, and reserves; profile settings (timer, break reminder).
 
 If no reviews are due and no new words are ready, the response says why ("Your words are still being prepared — 12 of 20 ready" or "Nothing due today — practice shaky words?"). The practice button is shown only when practice has eligible words.
 
@@ -367,7 +367,7 @@ All types except `spell_it` are 4-choice.
 
 1. **Intro item (new word):** picture (or emoji card), word with 🔊, part of speech, `short_def`, one example. Button: "Got it →". Logs `intro_seen`.
 2. **Question item:** type label, prompt, choices (**shuffled each time shown**, with `answer_index` remapped) or a text box, and **"I'm not sure"**. 🔊 reads: the definition for `pick_word`; the sentence with "blank" for `fill_blank`/`spell_it` (never the target word); the prompt for all other types. Keys 1–4 select a choice; Enter submits/advances.
-3. **Correct:** green feedback and the explanation. Displayed stars change only if this is the word's first graded answer today in a normal session, computed in the browser by `web/js/srs.js` (a mirror of §8.5 checked against `tests/srs_vectors.json`); the server remains authoritative for stored progress and results. "Next →".
+3. **Correct:** green feedback and the explanation. Displayed stars change only if the answer is stage-changing (§8.5, using the same `at` the event carries), computed in the browser by `web/js/srs.js` (a mirror of §8.5 checked against `tests/srs_vectors.json`); the server remains authoritative for stored progress and results. "Next →".
 4. **Wrong:** red feedback, the correct answer, the explanation; buttons **📖 Learn this word** (primary) and "skip for now". A typed answer within edit distance 1 of an accepted answer (answer length ≥ 5) shows "So close — check the spelling" but is graded wrong.
 5. **"I'm not sure":** graded as a miss (recorded as `unsure`), shows the answer, and opens Learn directly.
 6. **Re-ask:** after a miss, a re-ask item for that word is inserted 5 positions later (or at the end if fewer remain), using the next unused re-ask reserve; at most 2 re-asks per word per session.
@@ -386,13 +386,13 @@ All types except `spell_it` are 4-choice.
 
 Interval table (days) by the stage reached after a correct answer: 1 → 1, 2 → 3, 3 → 7, 4 → 14, 5 → 30.
 
-- **Which answers change the stage:** only the first graded answer (`answer` or `unsure`; not `check_answer`) for a word on a given learner local date, **in a `normal` session**. Later answers that day, and all `practice` answers, update counts and `seen_question_ids` only.
+- **Which answers change the stage ("counted"):** a graded answer (`answer` or `unsure`; never `check_answer`) in a `normal` **or** `practice` session, when the word has fewer than **3** counted answers on that learner local date (`MAX_COUNTED_PER_DAY`; the count resets on a new local date) **and** at least **2 hours** have passed since its previous counted answer (`MIN_HOURS_BETWEEN_COUNTED`, measured with the events' UTC `at`, so 11:30 pm then 12:30 am is still too soon). Other answers update counts and `seen_question_ids` only (plus the practice-miss rule below). A counted answer sets `graded_today` (1 on a new local date, else +1), `last_graded_on = local_date` and `last_graded_at = at`. Rows written before `last_graded_at` existed: if `last_graded_on` is today and `last_graded_at` is null, the word counts as already counted once today with the gap satisfied.
 - **Correct:** `stage = min(5, stage + 1)`. If the stage before this answer was < 5, `interval_days = table[new stage]` (so 4 → 5 gives 30). If it was already 5, `interval_days = min(60, max(30, interval_days × 2))`. `due_date = local_date + interval_days`. `last_graded_on = local_date`.
 - **Miss (wrong or unsure):** if `stage == 0` it stays 0; otherwise `stage = max(1, stage − 2)`. `interval_days = 1`; `due_date = local_date + 1`; `last_graded_on = local_date`.
-- **Practice miss:** stage unchanged; `due_date = min(due_date, local_date + 1)`.
+- **Practice miss that is not counted:** stage unchanged; `due_date = min(due_date, local_date + 1)`. (A counted practice answer follows the Correct/Miss rules above.)
 - **New word introduced** (`intro_seen`): progress is created with `stage = 0`, `due_date = local_date`, `introduced_on = local_date`.
 - **Second lock-in fail** (`check_result` with `check_set = 2`, `passed = false`): `due_date = local_date + 1`; stage unchanged.
-- **Ordering:** the server applies each batch of events sorted by `at`. A graded event whose `local_date` is earlier than the word's `last_graded_on` updates counts only.
+- **Ordering:** the server applies each batch of events sorted by `at`. A graded event whose `local_date` is earlier than the word's `last_graded_on`, or whose `at` is earlier than its `last_graded_at`, updates counts only.
 - **Derived status:** *new* = no progress; *learning* = stage 0–4; *mastered* = stage 5; *due today* = `due_date ≤ local_date`.
 
 ### 8.6 Session end
@@ -488,7 +488,7 @@ When AI is configured, a parent can "Regenerate → all" any starter word to get
 ### 14.2 Tests
 
 - **Unit (`pytest`):**
-  - `srs.py`: every rule in §8.5, including the same-day rule, practice mode, 4 → 5 and mastered intervals, out-of-order events, second lock-in fail; the same cases are written to `tests/srs_vectors.json`.
+  - `srs.py`: every rule in §8.5, including the daily count and 2-hour gap, counted practice answers, pre-upgrade rows, 4 → 5 and mastered intervals, out-of-order events, second lock-in fail; the same cases are written to `tests/srs_vectors.json`.
   - `session.py`: capacity, current-lists filter, review ordering, new-word reduction, tier selection and fallback, reserve priority rules with small pools, practice mode.
   - `validate.py` and `inflect.py`: each L/Q rule with passing and failing fixtures, including irregular forms, phrases, and blocklist whole-token matching.
   - `grading.py`: normalization, near-miss. Word normalization and rejection reasons.

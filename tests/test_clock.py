@@ -63,6 +63,13 @@ def test_parse_iso_accepts_browser_millis_and_offsets() -> None:
     assert clock.parse_iso("2026-10-07T10:03:00-04:00") == datetime(2026, 10, 7, 14, 3, tzinfo=UTC)
 
 
+@pytest.mark.parametrize("frac, micro", [("1", 100000), ("25", 250000), ("2501", 250100), ("25012", 250120),
+                                         ("250123", 250123)])
+def test_parse_iso_accepts_1_to_6_fraction_digits(frac: str, micro: int) -> None:
+    """The learner API accepts event `at` values with 1–6 fraction digits; all of them must parse."""
+    assert clock.parse_iso(f"2026-10-07T14:03:00.{frac}Z") == datetime(2026, 10, 7, 14, 3, 0, micro, tzinfo=UTC)
+
+
 def test_utc_date() -> None:
     late_evening_eastern = datetime(2026, 10, 7, 23, 30, tzinfo=timezone(timedelta(hours=-4)))
     assert clock.utc_date(late_evening_eastern) == "2026-10-08"
