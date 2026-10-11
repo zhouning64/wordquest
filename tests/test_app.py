@@ -116,6 +116,19 @@ def test_root_serves_the_page_shell(tmp_path):
         assert c.get("/static/nope.js").status_code == 404
 
 
+def test_page_code_is_revalidated_so_an_update_reaches_open_browsers(tmp_path):
+    # Without Cache-Control a browser guesses a freshness time and can run stale JS for hours after an update, even
+    # mixing old and new modules. "no-cache" makes it ask every time; an unchanged file costs only a 304.
+    with TestClient(create_app(make_settings(tmp_path), **injected(tmp_path), start_worker=False, seed=False)) as c:
+        assert c.get("/").headers["cache-control"] == "no-cache"
+        for path in ("/static/js/app.js", "/static/js/parent/stats.js", "/static/css/app.css"):
+            r = c.get(path)
+            assert r.status_code == 200
+            assert r.headers.get("cache-control") == "no-cache", path
+            again = c.get(path, headers={"If-None-Match": r.headers["etag"]})
+            assert again.status_code == 304, path
+
+
 def test_api_docs_and_schema_are_not_served(tmp_path):
     app = create_app(make_settings(tmp_path, site_access_code=""), **injected(tmp_path), start_worker=False, seed=False)
     with TestClient(app) as c:
