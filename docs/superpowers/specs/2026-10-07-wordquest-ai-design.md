@@ -384,7 +384,7 @@ All types except `spell_it` are 4-choice.
 
 ### 8.5 Spaced-repetition rules (`app/learning/srs.py`)
 
-Interval table (days) by the stage reached after a correct answer: 1 → 1, 2 → 3, 3 → 7, 4 → 14, 5 → 30.
+Interval table (days) by the stage reached after a correct answer: 1 → 1, 2 → 3, 3 → 7, 4 → 10, 5 → 30.
 
 - **Which answers change the stage ("counted"):** a graded answer (`answer` or `unsure`; never `check_answer`) in a `normal` **or** `practice` session, when the word has fewer than **3** counted answers on that learner local date (`MAX_COUNTED_PER_DAY`; the count resets on a new local date) **and** at least **2 hours** have passed since its previous counted answer (`MIN_HOURS_BETWEEN_COUNTED`, measured with the events' UTC `at`, so 11:30 pm then 12:30 am is still too soon). Other answers update counts and `seen_question_ids` only (plus the practice-miss rule below). A counted answer sets `graded_today` (1 on a new local date, else +1), `last_graded_on = local_date` and `last_graded_at = at`. Rows written before `last_graded_at` existed: if `last_graded_on` is today and `last_graded_at` is null, the word counts as already counted once today with the gap satisfied.
 - **Correct:** `stage = min(5, stage + 1)`. If the stage before this answer was < 5, `interval_days = table[new stage]` (so 4 → 5 gives 30). If it was already 5, `interval_days = min(60, max(30, interval_days × 2))`. `due_date = local_date + interval_days`. `last_graded_on = local_date`.

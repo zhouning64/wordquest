@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from app import clock
 from app.models import AnswerEvent, Session, WordProgress
 
-INTERVALS: dict[int, int] = {1: 1, 2: 3, 3: 7, 4: 14, 5: 30}
+INTERVALS: dict[int, int] = {1: 1, 2: 3, 3: 7, 4: 10, 5: 30}
 SEEN_IDS_CAP = 60
 MAX_STAGE = 5
 MASTERED_MIN_INTERVAL = 30
