@@ -15,6 +15,7 @@ from app.api.learner import eligible_words
 from app.auth import require_parent, require_site
 from app.backup import import_backup
 from app.learning.stats import profile_stats, window_start
+from app.learning.trends import profile_trends
 from app.models import BANDS, Band, Job, Profile, ProfileSettings, WordContent, WordList, new_id
 from app.security import redact
 from app.storage.base import Repository
@@ -257,17 +258,16 @@ def get_profile_stats(profile_id: str, request: Request, local_date: str | None 
     profile = _profile_or_404(repo, profile_id)
     today = local_date or clock.utc_date()
     try:
-        since = window_start(today)
+        window_start(today)  # validates local_date
     except ValueError:
         raise HTTPException(status_code=400, detail="invalid local_date") from None
-    return profile_stats(
-        profile,
-        repo.list_progress(profile.id),
-        repo.list_sessions(profile.id, STATS_SESSION_LIMIT),
-        repo.list_events(profile.id, since),
-        today,
-        eligible_words(repo, profile),
-    )
+    progress = repo.list_progress(profile.id)
+    sessions = repo.list_sessions(profile.id, STATS_SESSION_LIMIT)
+    events = repo.list_events(profile.id, "")  # the whole log: trends replay every answer (stats keep their window)
+    eligible = eligible_words(repo, profile)
+    stats = profile_stats(profile, progress, sessions, events, today, eligible)
+    stats["trends"] = profile_trends(events, sessions, progress, eligible, today)
+    return stats
 
 
 # ---------- word lists ----------

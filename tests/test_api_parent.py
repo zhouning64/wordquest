@@ -563,6 +563,37 @@ def test_profile_stats_endpoint(client, repo):
     assert client.get(f"/api/parent/profiles/{pid}/stats", params={"local_date": "yesterday"}).status_code == 400
 
 
+def test_profile_stats_trends_replay_answers_older_than_the_30_day_window(client, repo):
+    pid = _new_profile(client)["id"]
+    _new_list(client, "Week 1", "brave, calm", assign=[pid])
+    old = clock.add_days(TODAY, -40)
+
+    def dated(e: AnswerEvent, day: str) -> AnswerEvent:
+        return e.model_copy(update={"local_date": day, "at": f"{day}{e.at[10:]}"})
+
+    repo.save_session(Session(id="s0", profile_id=pid, mode="normal", local_date=old,
+                              started_at=f"{old}T10:00:00Z", planned_minutes=15))
+    repo.apply_events("s0", [
+        dated(_event(1, "calm", "intro_seen", sid="s0", pid=pid, qtype=None), old),
+        dated(_event(2, "calm", "answer", sid="s0", pid=pid, correct=True), old),
+    ], apply_events_to_state)
+    repo.save_session(Session(id="s1", profile_id=pid, mode="normal", local_date=TODAY,
+                              started_at=f"{TODAY}T10:00:00Z", planned_minutes=15))
+    repo.apply_events("s1", [
+        _event(3, "brave", "intro_seen", sid="s1", pid=pid, qtype=None),
+        _event(4, "brave", "answer", sid="s1", pid=pid, correct=True),
+    ], apply_events_to_state)
+
+    stats = client.get(f"/api/parent/profiles/{pid}/stats", params={"local_date": TODAY}).json()
+    assert stats["accuracy"]["answered"] == 1  # the accuracy numbers keep their 30-day window
+    days = stats["trends"]["days"]
+    assert len(days) == 30
+    assert days[0] == {"date": "2026-09-08", "stars": [0, 1, 0, 0, 0, 0], "new": 0, "gained": 0, "lost": 0}
+    assert days[-1] == {"date": TODAY, "stars": [0, 2, 0, 0, 0, 0], "new": 1, "gained": 1, "lost": 0}
+    upcoming = stats["trends"]["upcoming"]
+    assert upcoming[:2] == [{"date": TODAY, "due": 1}, {"date": "2026-10-08", "due": 1}]  # calm is overdue
+
+
 def test_status_reports_config_without_secret_values(tmp_path, repo, blobs):
     settings = _settings(tmp_path, cerebras_api_key="csk-live-abcdef123456", image_api_key="img-key-998877",
                          image_provider="openai_compatible", image_model="glm-image",

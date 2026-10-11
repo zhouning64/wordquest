@@ -1,11 +1,76 @@
 // #/parent/stats[/<profileId>] — progress dashboard for one learner (spec §11).
 import { api } from "../api.js";
 import { esc, localDate } from "../ui.js";
+import { barChart, numbersTable, trendViews } from "./charts.js";
 import { QTYPE_LABEL, asRows, pct, sessionRow, starText, statsCounts, typeRows, weakRow } from "./helpers.js";
 import { errorBox, frame, stillOn } from "./shell.js";
 
 function stat(value, label) {
   return `<div class="stat"><div class="n">${esc(value)}</div><div class="l">${esc(label)}</div></div>`;
+}
+
+// "Progress over time" (app/learning/trends.py). `today` is the column whose numbers show before any hover or tap.
+const CHARTS = [
+  { key: "stars", stacked: true, today: "last", title: "Words at each star level",
+    note: "How many words sit at each star level at the end of each day." },
+  { key: "activity", stacked: false, today: "last", title: "Daily activity",
+    note: "New words started and stars gained above the line, stars lost below it." },
+  { key: "upcoming", stacked: false, today: "first", title: "Reviews coming up",
+    note: "Words due for review on each of the next 14 days. Today includes anything overdue." },
+];
+
+const defaultIndex = (c, view) => (c.today === "first" ? 0 : view.labels.length - 1);
+
+function chartCard(c, view) {
+  return `
+    <div class="card" data-chart="${esc(c.key)}">
+      <h3 style="margin:0 0 4px">${esc(c.title)}</h3>
+      <p class="muted" style="margin:0 0 10px">${esc(c.note)}</p>
+      ${view.series.length > 1 ? `<div class="plegend">${view.series.map((s) => `<span><svg class="pswatch" viewBox="0 0 10 10" aria-hidden="true"><rect width="10" height="10" rx="2" fill="${esc(s.color)}"/></svg>${esc(s.name)}</span>`).join("")}</div>` : ""}
+      <div class="pchart-box"></div>
+      <p class="pchart-detail" aria-live="polite">${esc(view.details[defaultIndex(c, view)])}</p>
+      <details class="pnumbers"><summary>Numbers</summary>${numbersTable(view)}</details>
+    </div>`;
+}
+
+// Draws each chart at its card's width (redrawn when the window is resized). Hovering or tapping a day shows that
+// day's numbers under the chart.
+function drawCharts(root, views) {
+  const charts = [...root.querySelectorAll("[data-chart]")].map((card) => {
+    const c = CHARTS.find((x) => x.key === card.dataset.chart);
+    return { c, view: views[c.key], box: card.querySelector(".pchart-box"), detail: card.querySelector(".pchart-detail"), width: 0 };
+  });
+  const select = (ch, i) => {
+    ch.detail.textContent = ch.view.details[i];
+    for (const hit of ch.box.querySelectorAll(".hit")) hit.classList.toggle("on", hit.dataset.i === String(i));
+  };
+  const draw = () => {
+    if (!root.isConnected) {
+      window.removeEventListener("resize", draw);
+      return;
+    }
+    for (const ch of charts) {
+      const width = Math.max(280, Math.floor(ch.box.clientWidth));
+      if (width === ch.width) continue;
+      ch.width = width;
+      ch.box.innerHTML = barChart({ labels: ch.view.labels, series: ch.view.series, stacked: ch.c.stacked, width,
+        ariaLabel: ch.c.title + ". Exact numbers are in the Numbers table below the chart." });
+      select(ch, defaultIndex(ch.c, ch.view));
+    }
+  };
+  for (const ch of charts) {
+    const pick = (e) => {
+      const i = e.target && e.target.dataset ? e.target.dataset.i : undefined;
+      if (i !== undefined) select(ch, Number(i));
+    };
+    ch.box.addEventListener("pointerover", pick);
+    ch.box.addEventListener("click", pick);
+    ch.box.addEventListener("pointerleave", (e) => {
+      if (e.pointerType === "mouse") select(ch, defaultIndex(ch.c, ch.view));
+    });
+  }
+  draw();
+  window.addEventListener("resize", draw);
 }
 
 export async function render(root, ctx) {
@@ -43,6 +108,7 @@ export async function render(root, ctx) {
   const types = typeRows(s.accuracy && s.accuracy.by_type);
   const weak = asRows(s.weakest).map(weakRow).slice(0, 12);
   const sessions = asRows(s.recent_sessions).map(sessionRow).slice(0, 10);
+  const views = trendViews(s.trends);
 
   out.innerHTML = `
     <div class="stat-grid">
@@ -55,6 +121,7 @@ export async function render(root, ctx) {
       ${stat(pct(c.unsure_rate), "“not sure” rate (last 30 days)")}
       ${stat(c.days_practiced_30, "days practiced (last 30)")}
     </div>
+    ${views ? `<h2 class="psection">Progress over time</h2>${CHARTS.map((ch) => chartCard(ch, views[ch.key])).join("")}` : ""}
     <div class="card">
       <h3 style="margin:0 0 8px">Accuracy by question type</h3>
       ${
@@ -85,4 +152,5 @@ export async function render(root, ctx) {
           : `<p class="muted" style="margin:0">No sessions yet.</p>`
       }
     </div>`;
+  if (views) drawCharts(out, views);
 }
