@@ -7,6 +7,12 @@ __pycache__/
 # Anchored to the repo root so test fixture folders named "data" elsewhere are not ignored.
 /data/
 .env
+# Any other env file (.env.local, .env.meta, ...) may hold real keys; only the template is tracked.
+.env.*
+!.env.example
+
+# Claude Code local settings and dev-server configs
+.claude/
 
 # Editors
 .idea/
