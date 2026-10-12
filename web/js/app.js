@@ -90,7 +90,12 @@ async function route() {
   try {
     mod = r.screen === "parent" ? await LOADERS.parent(r.name) : await LOADERS[r.screen]();
   } catch (err) {
-    if (my === seq) showError(new Error("This screen isn't available yet."), () => route());
+    // Usually the server was stopped or restarting. The browser keeps a failed import() for the life of the page,
+    // so retrying in place can never succeed: "Try again" reloads the page instead.
+    if (my === seq) {
+      showError(new Error("Couldn't load this screen. Check that WordQuest is running, then try again."),
+        () => location.reload());
+    }
     return;
   }
   if (my !== seq) return;

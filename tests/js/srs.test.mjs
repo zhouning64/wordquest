@@ -36,7 +36,7 @@ const st = (stage, last = null, interval_days = 0, due_date = null, graded_today
   { stage, due_date, interval_days, last_graded_on: last, graded_today, last_graded_at });
 
 test("interval table and daily limits match spec §8.5", () => {
-  assert.deepEqual(INTERVALS, { 1: 1, 2: 3, 3: 7, 4: 14, 5: 30 });
+  assert.deepEqual(INTERVALS, { 1: 1, 2: 3, 3: 7, 4: 10, 5: 30 });
   assert.equal(MAX_COUNTED_PER_DAY, 3);
   assert.equal(MIN_HOURS_BETWEEN_COUNTED, 2);
 });

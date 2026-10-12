@@ -1,7 +1,7 @@
 // Display-only mirror of app/learning/srs.py (spec §8.5). The server stays authoritative;
 // tests/js/srs.test.mjs checks this file against tests/srs_vectors.json.
 
-export const INTERVALS = { 1: 1, 2: 3, 3: 7, 4: 14, 5: 30 };
+export const INTERVALS = { 1: 1, 2: 3, 3: 7, 4: 10, 5: 30 };
 export const MAX_COUNTED_PER_DAY = 3;
 export const MIN_HOURS_BETWEEN_COUNTED = 2;
 

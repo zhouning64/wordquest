@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -69,6 +69,16 @@ class OpenAccessWarning:
                     host,
                 )
         await self.app(scope, receive, send)
+
+
+class RevalidatedStaticFiles(StaticFiles):
+    """Page code (JS, CSS) that browsers must revalidate on every use (an unchanged file is a cheap 304). Without it a
+    browser guesses a freshness time and can keep running old modules for hours after an update, mixed with new ones."""
+
+    def file_response(self, *args, **kwargs) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def _seed_if_empty(repo: Repository, blobs: BlobStore) -> int:
@@ -252,7 +262,7 @@ def create_app(
     app.include_router(auth_router)
     app.include_router(learner_router)
     app.include_router(parent_router)
-    app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+    app.mount("/static", RevalidatedStaticFiles(directory=WEB_DIR), name="static")
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:

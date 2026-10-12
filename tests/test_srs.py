@@ -61,7 +61,7 @@ def test_vector(vec):
 # ---------- pure rules ----------
 
 def test_constants():
-    assert INTERVALS == {1: 1, 2: 3, 3: 7, 4: 14, 5: 30}
+    assert INTERVALS == {1: 1, 2: 3, 3: 7, 4: 10, 5: 30}
     assert SEEN_IDS_CAP == 60
     assert MAX_COUNTED_PER_DAY == 3
     assert MIN_HOURS_BETWEEN_COUNTED == 2
@@ -102,7 +102,7 @@ def test_counted_answers_update_the_daily_count_and_time():
     # 08:00 counted (new day), 09:00 too soon, 10:00 counted, 13:30 counted (third), 20:00 is the fourth: not counted
     assert ups == [True, False, True, True, False]
     assert (p.stage, p.graded_today, p.last_graded_at, p.last_graded_on) == (4, 3, "2026-10-07T13:30:00Z", TODAY)
-    assert (p.interval_days, p.due_date) == (14, "2026-10-21")
+    assert (p.interval_days, p.due_date) == (10, "2026-10-17")
     assert (p.seen, p.correct) == (5, 5)
 
 
@@ -335,7 +335,7 @@ def test_practice_session_answers_count_with_the_daily_limits():
     apply_events_to_state(s, progress, events)
     assert state(progress["bold"]) == {"stage": 1, "due_date": "2026-10-08", "interval_days": 1, "last_graded_on": TODAY,
                                        "graded_today": 1, "last_graded_at": "2026-10-07T15:00:01Z"}
-    assert state(progress["calm"]) == {"stage": 4, "due_date": "2026-10-21", "interval_days": 14, "last_graded_on": TODAY,
+    assert state(progress["calm"]) == {"stage": 4, "due_date": "2026-10-17", "interval_days": 10, "last_graded_on": TODAY,
                                        "graded_today": 1, "last_graded_at": "2026-10-07T15:00:02Z"}
     # not counted (too soon): the practice miss only pulls the due date to tomorrow
     assert state(progress["dull"]) == {"stage": 2, "due_date": "2026-10-08", "interval_days": 3, "last_graded_on": TODAY,

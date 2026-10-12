@@ -336,8 +336,10 @@ def _map_join_body(e):
 
 # Functions that return HTML built only from templates in web/js/parent (every one of their own interpolations is
 # checked by this test). Reviewed: rejectedHtml, regenSelectHtml, wordRowHtml (lists.js), questionHtml and
-# fallbackLearnHtml (preview.js), dangerHtml (profiles.js), stat (stats.js).
-HTML_HELPERS = ("rejectedHtml", "regenSelectHtml", "wordRowHtml", "questionHtml", "fallbackLearnHtml", "dangerHtml", "stat")
+# fallbackLearnHtml (preview.js), dangerHtml (profiles.js), stat and chartCard (stats.js), barChart and numbersTable
+# (charts.js: every label, name, colour and number they write goes through esc()).
+HTML_HELPERS = ("rejectedHtml", "regenSelectHtml", "wordRowHtml", "questionHtml", "fallbackLearnHtml", "dangerHtml", "stat",
+                "chartCard", "barChart", "numbersTable")
 
 
 def is_safe_output(expr):
@@ -512,6 +514,31 @@ ALLOWED_INTERPOLATIONS = {
     "backup.js": {
         # Error message of a failed upload: the HTTP status number. errText() shows it via textContent.
         "res.status": (1, NUMBER),
+    },
+    "charts.js": {
+        # plural(): `${n} ${n === 1 ? one : many}` with n a num() count and one/many literal words from its callers.
+        "n": (1, NUMBER),
+        "n === 1 ? one : many": (1, RETURNED_TEXT),
+        # dayLabel(): month name from the MONTHS table and the day as a Number().
+        "MONTHS[m - 1]": (1, CONSTANT),
+        "d": (1, NUMBER),
+        # barChart(): `out` holds the <line>/<text>/<rect> templates pushed just above, whose interpolations are esc().
+        'out.join("")': (1, LOCAL_HTML),
+        # trendViews(): star level index k and counts c (series names like "3★" are shown through esc(s.name)).
+        "k": (2, NUMBER),
+        "c": (1, NUMBER),
+        # trendViews() detail lines: plain text built from dayLabel() labels and plural() counts; stats.js shows them
+        # only as esc(view.details[...]) and through .textContent.
+        "labels[i]": (2, RETURNED_TEXT),
+        "dueLabels[i]": (1, RETURNED_TEXT),
+        'plural(total, "", "")': (1, RETURNED_TEXT),
+        'plural(num(d.new), "", "")': (1, RETURNED_TEXT),
+        'plural(num(d.gained), "", "")': (1, RETURNED_TEXT),
+        'plural(num(d.lost), "", "")': (1, RETURNED_TEXT),
+        'plural(num(u.due), "", "")': (1, RETURNED_TEXT),
+        # numbersTable(): `head` and `rows` are the <tr> templates built just above, whose interpolations are esc().
+        "head": (1, LOCAL_HTML),
+        'rows.join("")': (1, LOCAL_HTML),
     },
     "helpers.js": {
         # listHref(): `base` is "#/parent/lists/" + encodeURIComponent(listId); callers put it in href through esc().
